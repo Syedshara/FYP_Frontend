@@ -1,382 +1,156 @@
 import { useEffect, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import {
-  Plus, Search, X, Monitor as MonitorIcon, Loader2, Trash2, Edit3, Activity,
-} from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Monitor, Plus, Loader2, Search, X } from 'lucide-react';
 import { devicesApi } from '@/api/devices';
-import type { Device, DeviceCreate } from '@/types';
-import { cn, getStatusDotClass, formatRelativeTime } from '@/lib/utils';
+import type { Device } from '@/types';
+import { formatRelativeTime } from '@/lib/utils';
 
-const DEVICE_TYPES = ['sensor', 'camera', 'gateway', 'actuator', 'smart_plug', 'custom'];
-const PROTOCOLS = ['mqtt', 'coap', 'http', 'tcp', 'udp'];
-const TRAFFIC_SOURCES = ['simulated', 'live_capture', 'pcap_upload'];
+const stagger = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.04 } } };
+const fadeUp = { hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0 } };
 
-const container = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.05 } } };
-const item = { hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0 } };
+const statusConfig: Record<string, { color: string; bg: string; label: string; dot: string }> = {
+  online:       { color: 'var(--success)', bg: 'var(--success-light)', label: 'Online',      dot: 'status-dot status-online' },
+  offline:      { color: 'var(--text-muted)', bg: 'var(--bg-secondary)', label: 'Offline',    dot: 'status-dot status-offline' },
+  under_attack: { color: 'var(--danger)',  bg: 'var(--danger-light)',  label: 'Under Attack', dot: 'status-dot status-attack' },
+  quarantined:  { color: 'var(--warning)', bg: 'var(--warning-light)', label: 'Quarantined',  dot: 'status-dot status-quarantined' },
+};
 
 export default function DevicesPage() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
-  const [filterStatus, setFilterStatus] = useState('all');
-  const [showModal, setShowModal] = useState(false);
-  const [editDevice, setEditDevice] = useState<Device | null>(null);
 
-  const load = async () => {
-    try {
-      const d = await devicesApi.list();
-      setDevices(d);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+  useEffect(() => {
+    devicesApi.list().then(setDevices).finally(() => setLoading(false));
+  }, []);
+
+  const filtered = devices
+    .filter((d) => filter === 'all' || d.status === filter)
+    .filter((d) => {
+      if (!search.trim()) return true;
+      const q = search.toLowerCase();
+      return d.name.toLowerCase().includes(q) || (d.ip_address ?? '').toLowerCase().includes(q);
+    });
+
+  const counts = {
+    all: devices.length,
+    online: devices.filter((d) => d.status === 'online').length,
+    offline: devices.filter((d) => d.status === 'offline').length,
+    under_attack: devices.filter((d) => d.status === 'under_attack').length,
+    quarantined: devices.filter((d) => d.status === 'quarantined').length,
   };
 
-  useEffect(() => { load(); }, []);
-
-  const filtered = devices.filter((d) => {
-    const matchSearch =
-      d.name.toLowerCase().includes(search.toLowerCase()) ||
-      (d.ip_address ?? '').includes(search);
-    const matchStatus = filterStatus === 'all' || d.status === filterStatus;
-    return matchSearch && matchStatus;
-  });
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this device?')) return;
-    await devicesApi.delete(id);
-    setDevices((prev) => prev.filter((d) => d.id !== id));
-  };
+  if (loading) {
+    return <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} /></div>;
+  }
 
   return (
-    <motion.div variants={container} initial="hidden" animate="show" className="space-y-6">
+    <motion.div variants={stagger} initial="hidden" animate="show" className="page-stack">
       {/* Header */}
-      <motion.div variants={item} className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      <motion.div variants={fadeUp} className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">Device Management</h1>
-          <p className="text-sm text-[var(--text-muted)]">{devices.length} devices registered</p>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>Device Management</h1>
+          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>{devices.length} registered devices</p>
         </div>
-        <motion.button
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-          onClick={() => { setEditDevice(null); setShowModal(true); }}
-          className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-medium transition-colors"
-        >
-          <Plus className="w-4 h-4" /> Add Device
-        </motion.button>
+        <button className="btn btn-primary">
+          <Plus style={{ width: 16, height: 16 }} /> Add Device
+        </button>
       </motion.div>
 
-      {/* Filters */}
-      <motion.div variants={item} className="flex flex-wrap gap-3">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
+      {/* Filters + Search */}
+      <motion.div variants={fadeUp} className="flex items-center gap-3 flex-wrap">
+        {/* Status filters */}
+        <div className="flex gap-1.5">
+          {(['all', 'online', 'offline', 'under_attack', 'quarantined'] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => setFilter(s)}
+              style={{
+                padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                fontSize: 12, fontWeight: 500,
+                background: filter === s ? 'var(--accent)' : 'var(--bg-secondary)',
+                color: filter === s ? '#fff' : 'var(--text-secondary)',
+                transition: 'all .15s',
+              }}
+            >
+              {s === 'all' ? 'All' : s === 'under_attack' ? 'Attack' : s.charAt(0).toUpperCase() + s.slice(1)}
+              <span style={{ marginLeft: 6, opacity: 0.7 }}>({counts[s]})</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Search */}
+        <div className="relative flex-1" style={{ maxWidth: 280 }}>
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2" style={{ width: 14, height: 14, color: 'var(--text-muted)' }} />
           <input
             type="text"
             placeholder="Search by name or IP..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)] transition-all text-sm"
+            onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
+            className="input"
+            style={{ paddingLeft: 34, paddingRight: search ? 34 : 14, height: 36, fontSize: 13 }}
           />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center justify-center"
+              style={{ width: 20, height: 20, borderRadius: 4, background: 'var(--bg-secondary)', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+            >
+              <X style={{ width: 12, height: 12 }} />
+            </button>
+          )}
         </div>
-        <select
-          value={filterStatus}
-          onChange={(e) => setFilterStatus(e.target.value)}
-          className="px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-        >
-          <option value="all">All Status</option>
-          <option value="online">Online</option>
-          <option value="offline">Offline</option>
-          <option value="under_attack">Under Attack</option>
-          <option value="quarantined">Quarantined</option>
-        </select>
       </motion.div>
 
-      {/* Device Cards Grid */}
-      {loading ? (
-        <div className="flex justify-center py-16">
-          <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" />
-        </div>
-      ) : filtered.length === 0 ? (
-        <div className="card p-12 text-center">
-          <MonitorIcon className="w-12 h-12 mx-auto text-[var(--text-muted)] mb-3" />
-          <p className="text-[var(--text-muted)]">No devices found</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filtered.map((device) => (
-            <motion.div
-              key={device.id}
-              variants={item}
-              layout
-              className="card p-5 flex flex-col"
-            >
-              {/* Device Header */}
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <span className={getStatusDotClass(device.status)} />
-                  <h3 className="font-semibold text-[var(--text-primary)]">{device.name}</h3>
+      {/* Device Grid */}
+      {filtered.length > 0 ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+          {filtered.map((device) => {
+            const sc = statusConfig[device.status] ?? statusConfig.offline;
+            return (
+              <motion.div
+                key={device.id}
+                variants={fadeUp}
+                className="card card-interactive cursor-pointer"
+                style={{ padding: 20, borderLeft: `3px solid ${sc.color}` }}
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex items-center gap-3">
+                    <div style={{ width: 40, height: 40, borderRadius: 10, background: sc.bg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Monitor style={{ width: 18, height: 18, color: sc.color }} />
+                    </div>
+                    <div>
+                      <p style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>{device.name}</p>
+                      <p style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{device.ip_address}</p>
+                    </div>
+                  </div>
+                  <span className={sc.dot} />
                 </div>
-                <span className={cn(
-                  'text-xs px-2 py-0.5 rounded-full font-medium',
-                  device.status === 'online' ? 'bg-green-500/10 text-green-500' :
-                  device.status === 'under_attack' ? 'bg-red-500/10 text-red-500' :
-                  device.status === 'quarantined' ? 'bg-amber-500/10 text-amber-500' :
-                  'bg-gray-500/10 text-gray-400'
-                )}>
-                  {device.status}
-                </span>
-              </div>
 
-              {/* Device Details */}
-              <div className="space-y-1.5 text-sm flex-1">
-                <div className="flex justify-between">
-                  <span className="text-[var(--text-muted)]">Type</span>
-                  <span className="text-[var(--text-primary)] capitalize">{device.device_type}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[var(--text-muted)]">IP</span>
-                  <span className="text-[var(--text-primary)] font-mono text-xs">{device.ip_address ?? '—'}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[var(--text-muted)]">Protocol</span>
-                  <span className="text-[var(--text-primary)] uppercase">{device.protocol}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[var(--text-muted)]">Port</span>
-                  <span className="text-[var(--text-primary)]">{device.port}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[var(--text-muted)]">Last Seen</span>
-                  <span className="text-[var(--text-primary)]">
-                    {device.last_seen_at ? formatRelativeTime(device.last_seen_at) : 'Never'}
+                <div style={{ marginTop: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span className="badge" style={{ background: sc.bg, color: sc.color }}>{sc.label}</span>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                    {device.last_seen_at ? formatRelativeTime(device.last_seen_at) : 'Never seen'}
                   </span>
                 </div>
-                {device.threat_count_today > 0 && (
-                  <div className="flex justify-between">
-                    <span className="text-[var(--text-muted)]">Threats Today</span>
-                    <span className="text-red-500 font-medium">{device.threat_count_today}</span>
-                  </div>
-                )}
-              </div>
 
-              {/* Actions */}
-              <div className="flex gap-2 mt-4 pt-3 border-t border-[var(--border)]">
-                <button className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium bg-[var(--accent)]/10 text-[var(--accent)] hover:bg-[var(--accent)]/20 transition-colors">
-                  <Activity className="w-3.5 h-3.5" /> Monitor
-                </button>
-                <button
-                  onClick={() => { setEditDevice(device); setShowModal(true); }}
-                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-medium bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:bg-[var(--border)] transition-colors"
-                >
-                  <Edit3 className="w-3.5 h-3.5" /> Edit
-                </button>
-                <button
-                  onClick={() => handleDelete(device.id)}
-                  className="flex items-center justify-center p-2 rounded-lg text-xs font-medium bg-red-500/10 text-red-500 hover:bg-red-500/20 transition-colors"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </motion.div>
-          ))}
+                {device.device_type && (
+                  <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10 }}>
+                    Type: <span style={{ color: 'var(--text-secondary)' }}>{device.device_type}</span>
+                  </p>
+                )}
+              </motion.div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="card flex flex-col items-center justify-center" style={{ padding: 48 }}>
+          <Monitor style={{ width: 40, height: 40, color: 'var(--text-muted)', marginBottom: 12 }} />
+          <p style={{ fontSize: 14, color: 'var(--text-muted)' }}>No devices found</p>
         </div>
       )}
-
-      {/* Add/Edit Modal */}
-      <AnimatePresence>
-        {showModal && (
-          <DeviceModal
-            device={editDevice}
-            onClose={() => setShowModal(false)}
-            onSaved={() => { setShowModal(false); load(); }}
-          />
-        )}
-      </AnimatePresence>
-    </motion.div>
-  );
-}
-
-/* ── Modal ──────────────────────────────────────────────── */
-function DeviceModal({
-  device,
-  onClose,
-  onSaved,
-}: {
-  device: Device | null;
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const isEdit = !!device;
-  const [form, setForm] = useState<DeviceCreate>({
-    name: device?.name ?? '',
-    device_type: device?.device_type ?? 'sensor',
-    ip_address: device?.ip_address ?? '',
-    protocol: device?.protocol ?? 'tcp',
-    port: device?.port ?? 0,
-    traffic_source: device?.traffic_source ?? 'simulated',
-    description: device?.description ?? '',
-  });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    setError('');
-    try {
-      if (isEdit) {
-        await devicesApi.update(device!.id, form);
-      } else {
-        await devicesApi.create(form);
-      }
-      onSaved();
-    } catch (err: any) {
-      setError(err?.response?.data?.detail ?? 'Operation failed');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <motion.div
-        initial={{ scale: 0.95, opacity: 0 }}
-        animate={{ scale: 1, opacity: 1 }}
-        exit={{ scale: 0.95, opacity: 0 }}
-        className="card w-full max-w-lg p-6"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-lg font-bold text-[var(--text-primary)]">
-            {isEdit ? 'Edit Device' : 'Add New Device'}
-          </h2>
-          <button onClick={onClose} className="p-1 rounded-lg hover:bg-[var(--bg-secondary)] text-[var(--text-muted)]">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {error && (
-          <div className="mb-4 bg-red-500/10 border border-red-500/20 text-red-500 text-sm px-4 py-3 rounded-lg">
-            {error}
-          </div>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Name */}
-          <div>
-            <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">Device Name *</label>
-            <input
-              required
-              value={form.name}
-              onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-              placeholder="e.g., Camera_03"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {/* Type */}
-            <div>
-              <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">Device Type</label>
-              <select
-                value={form.device_type}
-                onChange={(e) => setForm({ ...form, device_type: e.target.value })}
-                className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-              >
-                {DEVICE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-
-            {/* Protocol */}
-            <div>
-              <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">Protocol</label>
-              <select
-                value={form.protocol}
-                onChange={(e) => setForm({ ...form, protocol: e.target.value })}
-                className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-              >
-                {PROTOCOLS.map((p) => <option key={p} value={p}>{p.toUpperCase()}</option>)}
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            {/* IP */}
-            <div>
-              <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">IP Address</label>
-              <input
-                value={form.ip_address}
-                onChange={(e) => setForm({ ...form, ip_address: e.target.value })}
-                className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-                placeholder="192.168.1.x"
-              />
-            </div>
-
-            {/* Port */}
-            <div>
-              <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">Port</label>
-              <input
-                type="number"
-                min={0}
-                max={65535}
-                value={form.port}
-                onChange={(e) => setForm({ ...form, port: Number(e.target.value) })}
-                className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-              />
-            </div>
-          </div>
-
-          {/* Traffic Source */}
-          <div>
-            <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">Traffic Source</label>
-            <select
-              value={form.traffic_source}
-              onChange={(e) => setForm({ ...form, traffic_source: e.target.value })}
-              className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-            >
-              {TRAFFIC_SOURCES.map((s) => <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>)}
-            </select>
-          </div>
-
-          {/* Description */}
-          <div>
-            <label className="block text-sm font-medium text-[var(--text-secondary)] mb-1">Description</label>
-            <textarea
-              value={form.description}
-              onChange={(e) => setForm({ ...form, description: e.target.value })}
-              rows={2}
-              className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)] resize-none"
-            />
-          </div>
-
-          {/* Actions */}
-          <div className="flex gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 py-2.5 rounded-lg border border-[var(--border)] text-[var(--text-secondary)] font-medium hover:bg-[var(--bg-secondary)] transition-colors text-sm"
-            >
-              Cancel
-            </button>
-            <motion.button
-              whileTap={{ scale: 0.98 }}
-              type="submit"
-              disabled={saving}
-              className="flex-1 py-2.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-medium transition-colors text-sm flex items-center justify-center gap-2 disabled:opacity-50"
-            >
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-              {isEdit ? 'Update' : 'Add Device'}
-            </motion.button>
-          </div>
-        </form>
-      </motion.div>
     </motion.div>
   );
 }

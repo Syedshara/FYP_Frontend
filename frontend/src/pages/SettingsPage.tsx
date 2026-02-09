@@ -1,133 +1,283 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Sun, Moon, Save } from 'lucide-react';
+import { User, Bell, Shield, Cpu, Database, Palette } from 'lucide-react';
 import { useThemeStore } from '@/stores/themeStore';
+import { useAuthStore } from '@/stores/authStore';
 
-const container = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.08 } } };
-const item = { hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0 } };
+const stagger = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.06 } } };
+const fadeUp = { hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0 } };
+
+const tabs = [
+  { id: 'profile',       label: 'Profile',        icon: User },
+  { id: 'notifications', label: 'Notifications',  icon: Bell },
+  { id: 'security',      label: 'Security',       icon: Shield },
+  { id: 'model',         label: 'Model Config',   icon: Cpu },
+  { id: 'system',        label: 'System',         icon: Database },
+  { id: 'appearance',    label: 'Appearance',     icon: Palette },
+];
+
+function Toggle({ checked, onChange }: { checked: boolean; onChange: () => void }) {
+  return (
+    <button
+      onClick={onChange}
+      style={{
+        width: 44, height: 24, borderRadius: 12, border: 'none', cursor: 'pointer',
+        background: checked ? 'var(--accent)' : 'var(--bg-secondary)',
+        position: 'relative', transition: 'background .2s',
+      }}
+    >
+      <span style={{
+        width: 18, height: 18, borderRadius: '50%', background: '#fff',
+        position: 'absolute', top: 3, left: checked ? 23 : 3,
+        transition: 'left .2s', boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+      }} />
+    </button>
+  );
+}
+
+function FieldRow({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between py-3" style={{ borderBottom: '1px solid var(--border)' }}>
+      <div>
+        <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-primary)' }}>{label}</p>
+        {description && <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>{description}</p>}
+      </div>
+      {children}
+    </div>
+  );
+}
 
 export default function SettingsPage() {
+  const [activeTab, setActiveTab] = useState('profile');
   const { theme, setTheme } = useThemeStore();
-  const [apiUrl, setApiUrl] = useState('http://localhost:8000');
-  const [threshold, setThreshold] = useState(0.5);
+  const { user } = useAuthStore();
+
+  // Notification settings
+  const [emailAlerts, setEmailAlerts] = useState(true);
+  const [pushAlerts, setPushAlerts] = useState(true);
+  const [attackAlerts, setAttackAlerts] = useState(true);
+  const [weeklyReport, setWeeklyReport] = useState(false);
+
+  // Security settings
+  const [twoFactor, setTwoFactor] = useState(false);
+  const [sessionTimeout, setSessionTimeout] = useState('30');
+
+  // Model config
+  const [threshold, setThreshold] = useState('0.5');
+  const [batchSize, setBatchSize] = useState('10');
+  const [autoRetrain, setAutoRetrain] = useState(false);
 
   return (
-    <motion.div variants={container} initial="hidden" animate="show" className="space-y-6 max-w-3xl">
-      {/* Header */}
-      <motion.div variants={item}>
-        <h1 className="text-2xl font-bold text-[var(--text-primary)]">Settings</h1>
-        <p className="text-sm text-[var(--text-muted)]">Configure platform preferences</p>
+    <motion.div variants={stagger} initial="hidden" animate="show" className="page-stack">
+      <motion.div variants={fadeUp}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>Settings</h1>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>Manage your account and system preferences</p>
       </motion.div>
 
-      {/* Model Configuration */}
-      <motion.div variants={item} className="card p-5">
-        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">Model Configuration</h3>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm text-[var(--text-secondary)] mb-1">Active Model</label>
-            <select className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm">
-              <option>global_final.pt</option>
-              <option>cnn_lstm_global_with_HE_25rounds_16k.pt</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm text-[var(--text-secondary)] mb-1">
-              Detection Threshold: <span className="font-mono text-[var(--accent)]">{threshold}</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={threshold}
-              onChange={(e) => setThreshold(Number(e.target.value))}
-              className="w-full accent-[var(--accent)]"
-            />
-            <div className="flex justify-between text-xs text-[var(--text-muted)]">
-              <span>0 (Sensitive)</span>
-              <span>1 (Strict)</span>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-4 text-sm">
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        {/* Sidebar Tabs */}
+        <motion.div variants={fadeUp} className="card lg:col-span-1" style={{ padding: 8 }}>
+          <nav style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, width: '100%',
+                    padding: '10px 14px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                    fontSize: 13, fontWeight: isActive ? 600 : 400, textAlign: 'left',
+                    background: isActive ? 'var(--accent-light)' : 'transparent',
+                    color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+                    transition: 'all .15s',
+                  }}
+                >
+                  <Icon style={{ width: 16, height: 16 }} />
+                  {tab.label}
+                </button>
+              );
+            })}
+          </nav>
+        </motion.div>
+
+        {/* Content */}
+        <motion.div variants={fadeUp} className="card lg:col-span-3" style={{ padding: 28 }}>
+          {/* Profile */}
+          {activeTab === 'profile' && (
             <div>
-              <span className="text-[var(--text-muted)]">Sequence Length</span>
-              <p className="text-[var(--text-primary)] font-mono">10 (fixed)</p>
+              <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 20 }}>Profile Settings</h2>
+
+              <div className="flex items-center gap-4 mb-6" style={{ padding: 16, borderRadius: 10, background: 'var(--bg-primary)' }}>
+                <div style={{
+                  width: 56, height: 56, borderRadius: '50%', background: 'var(--accent)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 20, fontWeight: 700, color: '#fff',
+                }}>
+                  {user?.username?.charAt(0).toUpperCase() ?? 'A'}
+                </div>
+                <div>
+                  <p style={{ fontSize: 16, fontWeight: 600, color: 'var(--text-primary)' }}>{user?.username ?? 'admin'}</p>
+                  <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>{user?.email ?? 'admin@iotids.local'}</p>
+                  <p style={{ fontSize: 11, color: 'var(--accent)', marginTop: 2 }}>{user?.role ?? 'administrator'}</p>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', display: 'block', marginBottom: 6 }}>Username</label>
+                  <input className="input" defaultValue={user?.username ?? 'admin'} style={{ maxWidth: 360 }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', display: 'block', marginBottom: 6 }}>Email</label>
+                  <input className="input" defaultValue={user?.email ?? 'admin@iotids.local'} style={{ maxWidth: 360 }} />
+                </div>
+                <button className="btn btn-primary" style={{ marginTop: 8 }}>Save Changes</button>
+              </div>
             </div>
+          )}
+
+          {/* Notifications */}
+          {activeTab === 'notifications' && (
             <div>
-              <span className="text-[var(--text-muted)]">Features</span>
-              <p className="text-[var(--text-primary)] font-mono">78 (fixed)</p>
+              <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 20 }}>Notification Preferences</h2>
+              <FieldRow label="Email Alerts" description="Receive threat alerts via email">
+                <Toggle checked={emailAlerts} onChange={() => setEmailAlerts(!emailAlerts)} />
+              </FieldRow>
+              <FieldRow label="Push Notifications" description="Browser push notifications for real-time alerts">
+                <Toggle checked={pushAlerts} onChange={() => setPushAlerts(!pushAlerts)} />
+              </FieldRow>
+              <FieldRow label="Attack Detection Alerts" description="Immediate notification when attacks are detected">
+                <Toggle checked={attackAlerts} onChange={() => setAttackAlerts(!attackAlerts)} />
+              </FieldRow>
+              <FieldRow label="Weekly Security Report" description="Automated weekly summary of security events">
+                <Toggle checked={weeklyReport} onChange={() => setWeeklyReport(!weeklyReport)} />
+              </FieldRow>
             </div>
-          </div>
-        </div>
-      </motion.div>
+          )}
 
-      {/* Backend Connection */}
-      <motion.div variants={item} className="card p-5">
-        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">Backend Connection</h3>
-        <div className="space-y-3">
-          <div>
-            <label className="block text-sm text-[var(--text-secondary)] mb-1">API URL</label>
-            <input
-              value={apiUrl}
-              onChange={(e) => setApiUrl(e.target.value)}
-              className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
-            />
-          </div>
-          <div className="flex items-center gap-2 text-sm">
-            <span className="status-dot status-online" />
-            <span className="text-green-500">Connected</span>
-          </div>
-        </div>
-      </motion.div>
-
-      {/* User Preferences */}
-      <motion.div variants={item} className="card p-5">
-        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">User Preferences</h3>
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm text-[var(--text-secondary)] mb-2">Theme</label>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setTheme('light')}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-medium transition-all ${
-                  theme === 'light'
-                    ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]'
-                    : 'border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'
-                }`}
-              >
-                <Sun className="w-4 h-4" /> Light
-              </button>
-              <button
-                onClick={() => setTheme('dark')}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg border text-sm font-medium transition-all ${
-                  theme === 'dark'
-                    ? 'border-[var(--accent)] bg-[var(--accent)]/10 text-[var(--accent)]'
-                    : 'border-[var(--border)] text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'
-                }`}
-              >
-                <Moon className="w-4 h-4" /> Dark
-              </button>
+          {/* Security */}
+          {activeTab === 'security' && (
+            <div>
+              <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 20 }}>Security Settings</h2>
+              <FieldRow label="Two-Factor Authentication" description="Add extra security to your account">
+                <Toggle checked={twoFactor} onChange={() => setTwoFactor(!twoFactor)} />
+              </FieldRow>
+              <FieldRow label="Session Timeout" description="Auto-logout after inactivity (minutes)">
+                <select value={sessionTimeout} onChange={(e) => setSessionTimeout(e.target.value)} style={{ width: 120, height: 36, fontSize: 13, padding: '6px 12px', borderRadius: 6, border: '1.5px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-primary)', outline: 'none', cursor: 'pointer' }}>
+                  <option value="15">15 min</option>
+                  <option value="30">30 min</option>
+                  <option value="60">1 hour</option>
+                  <option value="120">2 hours</option>
+                </select>
+              </FieldRow>
+              <div style={{ marginTop: 20 }}>
+                <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', display: 'block', marginBottom: 6 }}>Change Password</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 360 }}>
+                  <input className="input" type="password" placeholder="Current password" />
+                  <input className="input" type="password" placeholder="New password" />
+                  <input className="input" type="password" placeholder="Confirm new password" />
+                  <button className="btn btn-primary">Update Password</button>
+                </div>
+              </div>
             </div>
-          </div>
+          )}
 
-          <div>
-            <label className="block text-sm text-[var(--text-secondary)] mb-1">Dashboard Refresh Rate</label>
-            <select defaultValue="5" className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm">
-              <option value="1">1 second</option>
-              <option value="5">5 seconds</option>
-              <option value="10">10 seconds</option>
-              <option value="30">30 seconds</option>
-            </select>
-          </div>
-        </div>
-      </motion.div>
+          {/* Model Config */}
+          {activeTab === 'model' && (
+            <div>
+              <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 20 }}>Model Configuration</h2>
+              <FieldRow label="Detection Threshold" description="Anomaly score threshold for attack classification">
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range" min="0.1" max="0.9" step="0.05" value={threshold}
+                    onChange={(e) => setThreshold(e.target.value)}
+                    style={{ width: 120, accentColor: 'var(--accent)' }}
+                  />
+                  <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--warning)', minWidth: 36 }}>{threshold}</span>
+                </div>
+              </FieldRow>
+              <FieldRow label="Sequence Window" description="Number of packets per prediction window">
+                <select value={batchSize} onChange={(e) => setBatchSize(e.target.value)} style={{ width: 100, height: 36, fontSize: 13, padding: '6px 12px', borderRadius: 6, border: '1.5px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-primary)', outline: 'none', cursor: 'pointer' }}>
+                  <option value="5">5</option>
+                  <option value="10">10</option>
+                  <option value="15">15</option>
+                  <option value="20">20</option>
+                </select>
+              </FieldRow>
+              <FieldRow label="Auto-Retrain" description="Automatically trigger FL retraining when accuracy drops">
+                <Toggle checked={autoRetrain} onChange={() => setAutoRetrain(!autoRetrain)} />
+              </FieldRow>
+              <div style={{ marginTop: 20, padding: 16, borderRadius: 8, background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
+                <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginBottom: 8 }}>Current Model</p>
+                <div className="space-y-1" style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  <p>Architecture: <span style={{ color: 'var(--text-primary)' }}>CNN-LSTM (Conv1d + LSTM + Linear)</span></p>
+                  <p>File: <span style={{ color: 'var(--accent)', fontFamily: 'monospace' }}>cnn_lstm_global_with_HE_25rounds_16k.pt</span></p>
+                  <p>Input Shape: <span style={{ color: 'var(--text-primary)' }}>(batch, 10, 78)</span></p>
+                  <p>Training: <span style={{ color: 'var(--text-primary)' }}>25 rounds FL + CKKS HE</span></p>
+                </div>
+              </div>
+            </div>
+          )}
 
-      {/* Save */}
-      <motion.div variants={item}>
-        <button className="flex items-center gap-2 px-6 py-2.5 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white font-medium text-sm transition-colors">
-          <Save className="w-4 h-4" /> Save Settings
-        </button>
-      </motion.div>
+          {/* System */}
+          {activeTab === 'system' && (
+            <div>
+              <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 20 }}>System Information</h2>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {[
+                  { label: 'Backend API', value: 'FastAPI v0.115+', status: 'running' },
+                  { label: 'Database', value: 'PostgreSQL 15', status: 'running' },
+                  { label: 'Cache', value: 'Redis 7', status: 'running' },
+                  { label: 'FL Server', value: 'Flower gRPC :8080', status: 'running' },
+                  { label: 'Frontend', value: 'React + Vite', status: 'running' },
+                  { label: 'ML Runtime', value: 'PyTorch + TenSEAL', status: 'loaded' },
+                ].map((s) => (
+                  <div key={s.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 8, background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
+                    <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>{s.label}</span>
+                    <div className="flex items-center gap-3">
+                      <span style={{ fontSize: 12, color: 'var(--text-muted)', fontFamily: 'monospace' }}>{s.value}</span>
+                      <span className="status-dot status-online" />
+                      <span style={{ fontSize: 11, color: 'var(--success)' }}>{s.status}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ marginTop: 20, display: 'flex', gap: 10 }}>
+                <button className="btn btn-secondary">Export Logs</button>
+                <button className="btn btn-ghost" style={{ color: 'var(--danger)' }}>Clear Cache</button>
+              </div>
+            </div>
+          )}
+
+          {/* Appearance */}
+          {activeTab === 'appearance' && (
+            <div>
+              <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 20 }}>Appearance</h2>
+              <FieldRow label="Theme" description="Switch between light and dark mode">
+                <div className="flex gap-2">
+                  {(['light', 'dark'] as const).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTheme(t)}
+                      style={{
+                        padding: '8px 20px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                        fontSize: 13, fontWeight: 500,
+                        background: theme === t ? 'var(--accent)' : 'var(--bg-secondary)',
+                        color: theme === t ? '#fff' : 'var(--text-secondary)',
+                        transition: 'all .15s',
+                      }}
+                    >
+                      {t.charAt(0).toUpperCase() + t.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              </FieldRow>
+            </div>
+          )}
+        </motion.div>
+      </div>
     </motion.div>
   );
 }

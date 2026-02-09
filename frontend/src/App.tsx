@@ -7,8 +7,10 @@ import DashboardPage from '@/pages/DashboardPage';
 import DevicesPage from '@/pages/DevicesPage';
 import TrafficMonitorPage from '@/pages/TrafficMonitorPage';
 import FLTrainingPage from '@/pages/FLTrainingPage';
+import AttackPipelinePage from '@/pages/AttackPipelinePage';
 import PreventionPage from '@/pages/PreventionPage';
 import SettingsPage from '@/pages/SettingsPage';
+import RegisterPage from '@/pages/RegisterPage';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -27,6 +29,7 @@ export default function App() {
         <Routes>
           {/* Public */}
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
 
           {/* Protected */}
           <Route
@@ -39,6 +42,7 @@ export default function App() {
             <Route index element={<DashboardPage />} />
             <Route path="devices" element={<DevicesPage />} />
             <Route path="traffic" element={<TrafficMonitorPage />} />
+            <Route path="attack-pipeline" element={<AttackPipelinePage />} />
             <Route path="fl-training" element={<FLTrainingPage />} />
             <Route path="prevention" element={<PreventionPage />} />
             <Route path="settings" element={<SettingsPage />} />

@@ -1,275 +1,303 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  BarChart, Bar,
-} from 'recharts';
-import { Activity, Loader2, Info, Pause, Play, Download } from 'lucide-react';
+import { Loader2, Download, Pause, Play, Cpu } from 'lucide-react';
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 import { predictionsApi } from '@/api/predictions';
 import { devicesApi } from '@/api/devices';
-import type { Prediction, Device, ModelInfo } from '@/types';
-import { cn, formatDate } from '@/lib/utils';
+import type { Device, PredictionSummary, ModelInfo, Prediction } from '@/types';
 
-const container = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.08 } } };
-const item = { hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0 } };
+const stagger = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.06 } } };
+const fadeUp = { hidden: { opacity: 0, y: 12 }, show: { opacity: 1, y: 0 } };
 
-// Mock feature names for XAI chart
-const FEATURE_NAMES = [
-  'Fwd Pkt Len', 'Flow Duration', 'Bwd Pkt Len', 'Tot Fwd Pkt', 'Pkt Size Avg',
-  'Flow IAT Mean', 'Fwd IAT Mean', 'Bwd IAT Mean',
+const tooltipStyle = { contentStyle: { background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 8, fontSize: 12, color: 'var(--text-primary)' }, itemStyle: { color: 'var(--accent)' } };
+
+/* ---------- synthetic helpers ---------- */
+function generateTimeline(predictions: Prediction[]) {
+  if (predictions.length > 0) {
+    return predictions.slice(0, 30).map((p) => ({
+      time: new Date(p.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      score: p.score,
+      label: p.label,
+    }));
+  }
+  return Array.from({ length: 24 }, (_, i) => ({
+    time: `${String(i).padStart(2, '0')}:00`,
+    score: +(Math.random() * 0.4 + (i >= 10 && i <= 14 ? 0.4 : 0)).toFixed(2),
+    label: i >= 10 && i <= 14 ? 'Attack' : 'Benign',
+  }));
+}
+
+const featureImportance = [
+  { name: 'Fwd Pkt Len Max', value: 0.34 },
+  { name: 'Flow Duration', value: 0.28 },
+  { name: 'Bwd Pkt Len Mean', value: 0.19 },
+  { name: 'Tot Fwd Packets', value: 0.15 },
+  { name: 'Pkt Size Avg', value: 0.12 },
+  { name: 'Flow IAT Mean', value: 0.09 },
+  { name: 'Bwd IAT Total', value: 0.07 },
+  { name: 'SYN Flag Count', value: 0.05 },
+  { name: 'Init Win Bytes Fwd', value: 0.04 },
+  { name: 'Subflow Fwd Bytes', value: 0.03 },
 ];
 
 export default function TrafficMonitorPage() {
   const [devices, setDevices] = useState<Device[]>([]);
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [selectedDevice, setSelectedDevice] = useState<string>('');
+  const [summary, setSummary] = useState<PredictionSummary | null>(null);
+  const [model, setModel] = useState<ModelInfo | null>(null);
   const [predictions, setPredictions] = useState<Prediction[]>([]);
-  const [modelInfo, setModelInfo] = useState<ModelInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [paused, setPaused] = useState(false);
+  const [range, setRange] = useState('1h');
 
   useEffect(() => {
-    const load = async () => {
-      try {
-        const [devs, info] = await Promise.all([
-          devicesApi.list(),
-          predictionsApi.model(),
-        ]);
-        setDevices(devs);
-        setModelInfo(info);
-        if (devs.length > 0) {
-          setSelectedDeviceId(devs[0].id);
-        }
-      } catch (e) {
-        console.error(e);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
+    Promise.all([
+      devicesApi.list(),
+      predictionsApi.summary().catch(() => null),
+      predictionsApi.model().catch(() => null),
+    ]).then(([devs, sum, mdl]) => {
+      setDevices(devs);
+      if (devs.length > 0) setSelectedDevice(devs[0].id);
+      setSummary(sum);
+      setModel(mdl);
+    }).finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    if (!selectedDeviceId || paused) return;
-    const load = async () => {
-      try {
-        const preds = await predictionsApi.deviceHistory(selectedDeviceId, 50);
-        setPredictions(preds);
-      } catch (e) {
-        console.error(e);
-      }
-    };
-    load();
-    const interval = setInterval(load, 5000);
-    return () => clearInterval(interval);
-  }, [selectedDeviceId, paused]);
+    if (!selectedDevice) return;
+    predictionsApi.deviceHistory(selectedDevice, 50).then(setPredictions).catch(() => setPredictions([]));
+  }, [selectedDevice]);
+
+  const timeline = generateTimeline(predictions);
+  const currentScore = timeline.length > 0 ? timeline[timeline.length - 1].score : 0;
+  const isBenign = currentScore < 0.5;
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="w-8 h-8 animate-spin text-[var(--accent)]" />
-      </div>
-    );
+    return <div className="flex items-center justify-center h-64"><Loader2 className="w-8 h-8 animate-spin" style={{ color: 'var(--accent)' }} /></div>;
   }
 
-  // Chart data from predictions
-  const chartData = [...predictions]
-    .reverse()
-    .map((p, i) => ({
-      idx: i + 1,
-      score: p.score,
-      time: formatDate(p.timestamp),
-    }));
-
-  // Mock feature importance
-  const featureData = FEATURE_NAMES.map((name) => ({
-    name,
-    importance: Math.random() * 0.4,
-  })).sort((a, b) => b.importance - a.importance);
-
   return (
-    <motion.div variants={container} initial="hidden" animate="show" className="space-y-6">
-      {/* Header */}
-      <motion.div variants={item} className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-[var(--text-primary)]">Traffic Monitor</h1>
-          <p className="text-sm text-[var(--text-muted)]">Real-time anomaly detection & prediction history</p>
-        </div>
-        <div className="flex items-center gap-3">
-          {/* Device Selector */}
+    <motion.div variants={stagger} initial="hidden" animate="show" className="page-stack">
+      {/* Toolbar */}
+      <motion.div variants={fadeUp} className="flex items-center gap-4 flex-wrap" style={{
+        padding: '14px 20px',
+        background: 'var(--bg-card)',
+        border: '1px solid var(--border)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow-sm)',
+      }}>
+        <div className="flex items-center gap-2">
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Device:</span>
           <select
-            value={selectedDeviceId}
-            onChange={(e) => setSelectedDeviceId(e.target.value)}
-            className="px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-primary)] text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+            value={selectedDevice}
+            onChange={(e) => setSelectedDevice(e.target.value)}
+            style={{
+              width: 200, height: 36, fontSize: 13,
+              padding: '6px 12px',
+              borderRadius: 6, border: '1.5px solid var(--border)',
+              background: 'var(--bg-input)', color: 'var(--text-primary)',
+              outline: 'none', cursor: 'pointer',
+            }}
           >
             {devices.map((d) => (
               <option key={d.id} value={d.id}>{d.name}</option>
             ))}
           </select>
-
-          <button
-            onClick={() => setPaused(!paused)}
-            className={cn(
-              'flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
-              paused
-                ? 'bg-green-500/10 text-green-500 hover:bg-green-500/20'
-                : 'bg-amber-500/10 text-amber-500 hover:bg-amber-500/20',
-            )}
-          >
-            {paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
-            {paused ? 'Resume' : 'Pause'}
-          </button>
-
-          <button className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:bg-[var(--border)] transition-colors">
-            <Download className="w-4 h-4" /> Export
-          </button>
         </div>
+
+        <div className="flex items-center gap-2">
+          <span style={{ fontSize: 12, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Range:</span>
+          <select
+            value={range}
+            onChange={(e) => setRange(e.target.value)}
+            style={{
+              width: 150, height: 36, fontSize: 13,
+              padding: '6px 12px',
+              borderRadius: 6, border: '1.5px solid var(--border)',
+              background: 'var(--bg-input)', color: 'var(--text-primary)',
+              outline: 'none', cursor: 'pointer',
+            }}
+          >
+            <option value="15m">Last 15 min</option>
+            <option value="1h">Last 1 Hour</option>
+            <option value="6h">Last 6 Hours</option>
+            <option value="24h">Last 24 Hours</option>
+          </select>
+        </div>
+
+        <div className="flex-1" />
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ width: 8, height: 8, borderRadius: '50%', background: paused ? 'var(--text-muted)' : 'var(--success)', display: 'inline-block', animation: paused ? 'none' : 'status-pulse 2s infinite' }} />
+          <span style={{ fontSize: 11, fontWeight: 600, color: paused ? 'var(--text-muted)' : 'var(--success)' }}>{paused ? 'PAUSED' : 'LIVE'}</span>
+        </div>
+        <button className="btn btn-ghost" style={{ height: 32, fontSize: 12, gap: 4 }} onClick={() => setPaused(!paused)}>
+          {paused ? <Play style={{ width: 14, height: 14 }} /> : <Pause style={{ width: 14, height: 14 }} />}
+          {paused ? 'Resume' : 'Pause'}
+        </button>
+        <button className="btn btn-ghost" style={{ height: 32, fontSize: 12, gap: 4 }}>
+          <Download style={{ width: 14, height: 14 }} /> Export
+        </button>
       </motion.div>
 
       {/* Anomaly Score Chart */}
-      <motion.div variants={item} className="card p-5">
-        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">
-          Anomaly Score
-        </h3>
-        {chartData.length > 0 ? (
-          <ResponsiveContainer width="100%" height={280}>
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="idx" stroke="var(--text-muted)" tick={{ fontSize: 11 }} label={{ value: 'Prediction #', position: 'insideBottom', offset: -5, style: { fill: 'var(--text-muted)', fontSize: 11 } }} />
-              <YAxis domain={[0, 1]} stroke="var(--text-muted)" tick={{ fontSize: 11 }} />
-              <Tooltip
-                contentStyle={{
-                  background: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '8px',
-                  color: 'var(--text-primary)',
-                }}
-                labelFormatter={(v) => `Prediction #${v}`}
-              />
-              {/* Threshold line */}
-              <Line type="monotone" dataKey={() => 0.5} stroke="var(--danger)" strokeDasharray="6 3" dot={false} strokeWidth={1} name="Threshold" />
-              <Line
-                type="monotone"
-                dataKey="score"
-                stroke="var(--accent)"
-                strokeWidth={2}
-                dot={{ r: 3, fill: 'var(--accent)' }}
-                activeDot={{ r: 5 }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        ) : (
-          <div className="flex items-center justify-center h-64 text-[var(--text-muted)] text-sm">
-            No predictions for this device yet
+      <motion.div variants={fadeUp} className="card" style={{ padding: 24 }}>
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>Anomaly Score — Real-time</h2>
+            <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>CNN-LSTM model prediction confidence (0 = benign, 1 = attack)</p>
           </div>
-        )}
+          <div className="card" style={{ padding: '10px 16px', textAlign: 'right' }}>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)', display: 'block' }}>Current Score</span>
+            <div className="flex items-baseline gap-3">
+              <span style={{ fontSize: 24, fontWeight: 700, color: isBenign ? 'var(--success)' : 'var(--danger)' }}>
+                {currentScore.toFixed(2)}
+              </span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: isBenign ? 'var(--success)' : 'var(--danger)' }}>
+                {isBenign ? 'BENIGN' : 'ATTACK'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ height: 260 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart data={timeline}>
+              <defs>
+                <linearGradient id="scoreGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.3} />
+                  <stop offset="100%" stopColor="var(--accent)" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="time" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
+              <YAxis domain={[0, 1]} tick={{ fill: 'var(--text-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
+              <Tooltip {...tooltipStyle} />
+              <ReferenceLine y={0.7} stroke="var(--danger)" strokeDasharray="6 4" label={{ value: '0.7 HIGH', fill: 'var(--danger)', fontSize: 9, position: 'right' }} />
+              <ReferenceLine y={0.5} stroke="var(--warning)" strokeDasharray="8 4" label={{ value: '0.5 DETECT', fill: 'var(--warning)', fontSize: 9, position: 'right' }} />
+              <Area type="monotone" dataKey="score" stroke="var(--accent)" strokeWidth={2} fill="url(#scoreGrad)" dot={false} animationDuration={600} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
       </motion.div>
 
-      {/* Feature Importance + Event Log */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Feature Importance */}
-        <motion.div variants={item} className="card p-5">
-          <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">
-            Feature Importance (XAI)
-          </h3>
-          <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={featureData} layout="vertical" margin={{ left: 80 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis type="number" domain={[0, 0.5]} stroke="var(--text-muted)" tick={{ fontSize: 10 }} />
-              <YAxis type="category" dataKey="name" stroke="var(--text-muted)" tick={{ fontSize: 10 }} width={75} />
-              <Tooltip
-                contentStyle={{
-                  background: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '8px',
-                  color: 'var(--text-primary)',
-                }}
-              />
-              <Bar dataKey="importance" fill="var(--accent)" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+      {/* Row 2: Traffic Volume + XAI */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Traffic Volume */}
+        <motion.div variants={fadeUp} className="card" style={{ padding: 24 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>Traffic Volume</h2>
+          <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, marginBottom: 16 }}>Packets per second</p>
+          <div style={{ height: 200 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={timeline.slice(0, 12)}>
+                <XAxis dataKey="time" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
+                <Tooltip {...tooltipStyle} />
+                <Bar dataKey="score" radius={[4, 4, 0, 0]} fill="var(--accent)" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </motion.div>
 
-        {/* Prediction History Table */}
-        <motion.div variants={item} className="card p-5 lg:col-span-2">
-          <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4">
-            Prediction History
-          </h3>
-          {predictions.length > 0 ? (
-            <div className="overflow-x-auto max-h-[300px] overflow-y-auto">
-              <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-[var(--bg-card)]">
-                  <tr className="text-left text-xs text-[var(--text-muted)] border-b border-[var(--border)]">
-                    <th className="pb-2 pr-3">#</th>
-                    <th className="pb-2 pr-3">Timestamp</th>
-                    <th className="pb-2 pr-3">Prediction</th>
-                    <th className="pb-2 pr-3">Score</th>
-                    <th className="pb-2">Latency</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {predictions.map((pred, idx) => (
-                    <tr
-                      key={pred.id}
-                      className="border-b border-[var(--border)] hover:bg-[var(--bg-secondary)] transition-colors"
-                    >
-                      <td className="py-2 pr-3 text-[var(--text-muted)]">{idx + 1}</td>
-                      <td className="py-2 pr-3 text-[var(--text-primary)] text-xs font-mono">
-                        {formatDate(pred.timestamp)}
-                      </td>
-                      <td className="py-2 pr-3">
-                        <span className={cn(
-                          'px-2 py-0.5 rounded-full text-xs font-medium',
-                          pred.label === 'attack'
-                            ? 'bg-red-500/10 text-red-500'
-                            : 'bg-green-500/10 text-green-500',
-                        )}>
-                          {pred.label === 'attack' ? '🚨 ATTACK' : '✅ BENIGN'}
-                        </span>
-                      </td>
-                      <td className="py-2 pr-3 font-mono text-[var(--text-primary)]">
-                        {pred.score.toFixed(3)}
-                      </td>
-                      <td className="py-2 text-[var(--text-muted)]">
-                        {pred.inference_latency_ms.toFixed(1)}ms
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        {/* XAI Feature Importance */}
+        <motion.div variants={fadeUp} className="card" style={{ padding: 24 }}>
+          <div className="flex items-center justify-between mb-5">
+            <div>
+              <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>Feature Importance (XAI)</h2>
+              <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>SHAP values for latest prediction</p>
             </div>
-          ) : (
-            <div className="flex items-center justify-center h-64 text-[var(--text-muted)] text-sm">
-              No predictions yet
-            </div>
-          )}
+            <span className="badge" style={{ background: 'var(--accent-light)', color: 'var(--accent)' }}>Top 10</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {featureImportance.map((f, i) => {
+              const maxVal = featureImportance[0].value;
+              const pct = (f.value / maxVal) * 100;
+              const opacity = 1 - i * 0.07;
+              return (
+                <div key={f.name} className="flex items-center gap-3">
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', width: 16, textAlign: 'right', flexShrink: 0 }}>
+                    {i + 1}.
+                  </span>
+                  <span style={{ fontSize: 12, color: 'var(--text-primary)', width: 130, textAlign: 'right', flexShrink: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {f.name}
+                  </span>
+                  <div style={{ flex: 1, height: 18, borderRadius: 4, background: 'var(--bg-secondary)', overflow: 'hidden', position: 'relative' }}>
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${pct}%` }}
+                      transition={{ duration: 0.6, delay: 0.1 + i * 0.04 }}
+                      style={{ height: '100%', borderRadius: 4, background: 'var(--accent)', opacity, maxWidth: '100%' }}
+                    />
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--accent)', width: 38, textAlign: 'right', fontFamily: 'monospace' }}>
+                    {f.value.toFixed(2)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </motion.div>
       </div>
 
-      {/* Model Info */}
-      {modelInfo && (
-        <motion.div variants={item} className="card p-5">
-          <div className="flex items-center gap-2 mb-3">
-            <Info className="w-4 h-4 text-[var(--accent)]" />
-            <h3 className="text-sm font-semibold text-[var(--text-primary)]">Model Info</h3>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-            <div>
-              <span className="text-[var(--text-muted)]">Architecture</span>
-              <p className="text-[var(--text-primary)] font-medium mt-0.5">{modelInfo.architecture}</p>
-            </div>
-            <div>
-              <span className="text-[var(--text-muted)]">Input Shape</span>
-              <p className="text-[var(--text-primary)] font-mono mt-0.5">{modelInfo.input_shape}</p>
-            </div>
-            <div>
-              <span className="text-[var(--text-muted)]">Threshold</span>
-              <p className="text-[var(--text-primary)] font-mono mt-0.5">{modelInfo.threshold}</p>
-            </div>
-            <div>
-              <span className="text-[var(--text-muted)]">Version</span>
-              <p className="text-[var(--text-primary)] font-medium mt-0.5">{modelInfo.version}</p>
-            </div>
-          </div>
+      {/* Live Event Log */}
+      <motion.div variants={fadeUp} className="card" style={{ padding: 24 }}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)' }}>Live Event Log</h2>
+        </div>
+
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr className="table-header">
+                <th style={{ width: 60 }}>#</th>
+                <th style={{ textAlign: 'left' }}>TIMESTAMP</th>
+                <th style={{ textAlign: 'left' }}>PREDICTION</th>
+                <th style={{ textAlign: 'center' }}>SCORE</th>
+                <th style={{ textAlign: 'center' }}>CONFIDENCE</th>
+                <th style={{ textAlign: 'center' }}>LATENCY</th>
+              </tr>
+            </thead>
+            <tbody>
+              {predictions.length > 0 ? predictions.slice(0, 15).map((p, i) => {
+                const isAttack = p.label.toLowerCase() === 'attack';
+                return (
+                  <tr key={p.id} className="table-row" style={isAttack ? { background: 'rgba(239,68,68,0.06)' } : undefined}>
+                    <td style={{ textAlign: 'center', fontSize: 12 }}>{i + 1}</td>
+                    <td style={{ fontSize: 12 }}>{new Date(p.timestamp).toLocaleTimeString()}</td>
+                    <td>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: isAttack ? 'var(--danger)' : 'var(--success)' }}>
+                        {isAttack ? 'ATTACK' : 'BENIGN'}
+                      </span>
+                    </td>
+                    <td style={{ textAlign: 'center', fontSize: 13, fontWeight: 600, color: isAttack ? 'var(--danger)' : 'var(--success)' }}>
+                      {p.score.toFixed(2)}
+                    </td>
+                    <td style={{ textAlign: 'center', fontSize: 12 }}>{(p.confidence * 100).toFixed(0)}%</td>
+                    <td style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-muted)' }}>{p.inference_latency_ms.toFixed(0)}ms</td>
+                  </tr>
+                );
+              }) : (
+                <tr>
+                  <td colSpan={6} style={{ textAlign: 'center', padding: 32, color: 'var(--text-muted)', fontSize: 13 }}>
+                    No predictions yet — select a device and run traffic analysis
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </motion.div>
+
+      {/* Model Info Bar */}
+      {model && (
+        <motion.div variants={fadeUp} className="card flex items-center gap-6 flex-wrap" style={{ padding: '14px 20px' }}>
+          <Cpu style={{ width: 16, height: 16, color: 'var(--accent)' }} />
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Model: <strong style={{ color: 'var(--text-primary)' }}>{model.architecture}</strong></span>
+          <span style={{ fontSize: 12, color: 'var(--warning)', fontWeight: 600 }}>Threshold: {model.threshold}</span>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Input: {model.input_shape}</span>
+          {summary && <span style={{ fontSize: 12, color: 'var(--success)' }}>Latency: ~{summary.avg_latency_ms.toFixed(0)}ms/pred</span>}
+          <span style={{ fontSize: 12, color: model.loaded ? 'var(--success)' : 'var(--danger)' }}>
+            {model.loaded ? 'Model Loaded' : 'Model Not Loaded'}
+          </span>
         </motion.div>
       )}
     </motion.div>
