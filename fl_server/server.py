@@ -127,6 +127,7 @@ class FedAvgHE(fl.server.strategy.FedAvg):
     def configure_fit(self, server_round, parameters, client_manager):
         config: Dict[str, Scalar] = {
             "server_round": server_round,
+            "total_rounds": ROUNDS,
             "local_epochs": DEFAULT_CONFIG["LOCAL_EPOCHS"],
             "lr": float(DEFAULT_CONFIG["LEARNING_RATE"]),
             "use_he": self.use_he,
@@ -191,8 +192,9 @@ class FedAvgHE(fl.server.strategy.FedAvg):
         weighted_acc = 0.0
 
         for proxy, fit_res in results:
-            cid = getattr(proxy, "cid", "unknown")
             m = fit_res.metrics or {}
+            # Prefer registered client_id from metrics over Flower's internal UUID
+            cid = m.get("client_id", getattr(proxy, "cid", "unknown"))
             n = int(fit_res.num_examples)
             loss = float(m.get("loss", 0.0))
             acc = float(m.get("accuracy", 0.0))

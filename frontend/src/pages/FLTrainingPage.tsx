@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Loader2, Activity, Lock, Server, Users, TrendingUp, Play, Pause,
   Square, Settings, Wifi, WifiOff, SkipForward, SkipBack,
-  Zap, Shield, AlertTriangle, X,
+  Zap, Shield, AlertTriangle, X, BarChart3, ChevronDown,
 } from 'lucide-react';
 import {
   LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip,
@@ -11,7 +11,7 @@ import {
 } from 'recharts';
 import { flApi } from '@/api/fl';
 import { useLiveStore } from '@/stores/liveStore';
-import type { FLRound, FLStatus, FLClient } from '@/types';
+import type { FLRound, FLRoundDetail, FLStatus, FLClient } from '@/types';
 import type { FLClientProgress } from '@/stores/liveStore';
 
 /* ── Animations ───────────────────────────────── */
@@ -41,6 +41,12 @@ const CKKS_CONFIG = [
   { param: 'Encrypted layers', value: 'LSTM + FC only' },
 ];
 
+/* ── Per-client chart colors ─────────────────── */
+const CLIENT_COLORS = [
+  '#6366F1', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6',
+  '#EC4899', '#14B8A6', '#F97316', '#06B6D4', '#84CC16',
+];
+
 /* ── Helpers ──────────────────────────────────── */
 function statusToStep(status: string): string {
   if (status === 'training') return 'training';
@@ -54,6 +60,7 @@ function getClientStatusColor(s: string): string {
   if (s === 'encrypting' || s === 'sending') return 'var(--danger)';
   if (s === 'done') return 'var(--success)';
   if (s === 'error') return 'var(--danger)';
+  if (s === 'waiting') return 'var(--warning)';
   return 'var(--text-muted)';
 }
 
@@ -62,6 +69,7 @@ function getClientStatusBg(s: string): string {
   if (s === 'encrypting' || s === 'sending') return 'var(--danger-light)';
   if (s === 'done') return 'var(--success-light)';
   if (s === 'error') return 'var(--danger-light)';
+  if (s === 'waiting') return 'var(--warning-light)';
   return 'var(--bg-secondary)';
 }
 
@@ -305,15 +313,46 @@ function PipelineVis({ activeStep, clients }: { activeStep: string; clients: Rec
 /* ══════════════════════════════════════════════════
    Client Progress Card
    ══════════════════════════════════════════════════ */
+/** Format seconds into human-readable "Xm Ys" or "Xs" */
+function fmtEta(sec: number | undefined): string {
+  if (sec == null || sec <= 0) return '—';
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+/** Format "last update" relative time */
+function fmtAgo(iso: string | undefined): string {
+  if (!iso) return '';
+  const diff = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (diff < 5) return 'just now';
+  if (diff < 60) return `${diff}s ago`;
+  return `${Math.floor(diff / 60)}m ${diff % 60}s ago`;
+}
+
 function ClientProgressCard({ progress, lossHistory }: { progress: FLClientProgress; lossHistory: number[] }) {
   const color = getClientStatusColor(progress.status);
   const pct = Math.min(100, Math.max(0, progress.progress_pct));
 
+  const hasBatchDetail = progress.batch != null && progress.total_batches != null;
+  const hasThroughput = progress.throughput != null && progress.throughput > 0;
+  const hasSampleDetail = progress.samples_processed != null && progress.total_samples != null;
+
   // Build mini loss curve data
   const lossCurve = lossHistory.map((v, i) => ({ epoch: i + 1, loss: v }));
 
+  // Rerender every 5s to keep "ago" fresh
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!progress.last_update_time) return;
+    const iv = setInterval(() => setTick((t) => t + 1), 5000);
+    return () => clearInterval(iv);
+  }, [progress.last_update_time]);
+
   return (
     <motion.div layout className="card" style={{ padding: 16, borderLeft: `3px solid ${color}` }}>
+      {/* Header */}
       <div className="flex items-center justify-between" style={{ marginBottom: 10 }}>
         <div className="flex items-center gap-2">
           <Users style={{ width: 14, height: 14, color }} />
@@ -325,10 +364,12 @@ function ClientProgressCard({ progress, lossHistory }: { progress: FLClientProgr
       </div>
 
       {/* Progress Bar */}
-      <div style={{ marginBottom: 10 }}>
+      <div style={{ marginBottom: 8 }}>
         <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>
           <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-            Epoch {progress.current_epoch} / {progress.total_epochs}
+            {hasBatchDetail
+              ? `Batch ${progress.batch}/${progress.total_batches} · Epoch ${progress.current_epoch}/${progress.total_epochs}`
+              : `Epoch ${progress.current_epoch} / ${progress.total_epochs}`}
           </span>
           <span style={{ fontSize: 11, fontWeight: 700, color }}>{pct.toFixed(0)}%</span>
         </div>
@@ -341,21 +382,55 @@ function ClientProgressCard({ progress, lossHistory }: { progress: FLClientProgr
         </div>
       </div>
 
+      {/* Sample / throughput / ETA line */}
+      {(hasSampleDetail || hasThroughput) && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, lineHeight: 1.6 }}>
+          {hasSampleDetail && (
+            <span>
+              {progress.samples_processed!.toLocaleString()} / {progress.total_samples!.toLocaleString()} samples
+            </span>
+          )}
+          {hasThroughput && (
+            <span style={{ marginLeft: hasSampleDetail ? 8 : 0 }}>
+              · {progress.throughput!.toLocaleString()} samp/s
+            </span>
+          )}
+          {progress.eta_seconds != null && progress.eta_seconds > 0 && (
+            <span style={{ marginLeft: 8 }}>
+              · ETA {fmtEta(progress.eta_seconds)}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Metrics Grid */}
-      <div className="grid grid-cols-3 gap-2" style={{ marginBottom: 10 }}>
+      <div className="grid grid-cols-3 gap-2" style={{ marginBottom: 8 }}>
         <div style={{ padding: '6px 8px', borderRadius: 6, background: 'var(--bg-primary)', textAlign: 'center' }}>
           <p style={{ fontSize: 9, color: 'var(--text-muted)' }}>Loss</p>
-          <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{progress.local_loss.toFixed(4)}</p>
+          <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+            {(progress.current_loss ?? progress.local_loss).toFixed(4)}
+          </p>
         </div>
         <div style={{ padding: '6px 8px', borderRadius: 6, background: 'var(--bg-primary)', textAlign: 'center' }}>
           <p style={{ fontSize: 9, color: 'var(--text-muted)' }}>Accuracy</p>
-          <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--success)' }}>{(progress.local_accuracy * 100).toFixed(1)}%</p>
+          <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--success)' }}>
+            {((progress.current_accuracy ?? progress.local_accuracy) * 100).toFixed(1)}%
+          </p>
         </div>
         <div style={{ padding: '6px 8px', borderRadius: 6, background: 'var(--bg-primary)', textAlign: 'center' }}>
           <p style={{ fontSize: 9, color: 'var(--text-muted)' }}>Samples</p>
-          <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{progress.num_samples.toLocaleString()}</p>
+          <p style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+            {(progress.samples_processed ?? progress.num_samples).toLocaleString()}
+          </p>
         </div>
       </div>
+
+      {/* Last update */}
+      {progress.last_update_time && (
+        <p style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: lossCurve.length > 1 ? 8 : 0 }}>
+          Last update: {fmtAgo(progress.last_update_time)}
+        </p>
+      )}
 
       {/* Mini Loss Curve */}
       {lossCurve.length > 1 && (
@@ -392,13 +467,20 @@ export default function FLTrainingPage() {
   const [replaySpeed, setReplaySpeed] = useState(1);
   const replayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // ── Metrics & Analytics state ──
+  const [selectedMetricsClient, setSelectedMetricsClient] = useState<string>('');
+  const [clientRoundDetails, setClientRoundDetails] = useState<FLRoundDetail[]>([]);
+  const [loadingClientMetrics, setLoadingClientMetrics] = useState(false);
+
   // ── Live store ──
   const wsConnected = useLiveStore((s) => s.wsConnected);
   const flGlobal = useLiveStore((s) => s.flGlobalProgress);
   const flClientProgress = useLiveStore((s) => s.flClientProgress);
   const liveRoundResults = useLiveStore((s) => s.flRoundResults);
+  const flClientRoundHistory = useLiveStore((s) => s.flClientRoundHistory);
   const clearFLProgress = useLiveStore((s) => s.clearFLProgress);
   const clearFLRoundResults = useLiveStore((s) => s.clearFLRoundResults);
+  const clearFLClientRoundHistory = useLiveStore((s) => s.clearFLClientRoundHistory);
 
   // ── Loss history per client (for mini sparklines) ──
   const clientLossHistoryRef = useRef<Record<string, number[]>>({});
@@ -438,12 +520,43 @@ export default function FLTrainingPage() {
     }
   }, [liveRoundResults.length]);
 
-  // ── Refresh status when training stops ──
+  // ── Refresh status + clients when training stops ──
+  const prevIsTraining = useRef(false);
   useEffect(() => {
+    const wasTraining = prevIsTraining.current;
+    const nowTraining = flGlobal?.is_training === true;
+    prevIsTraining.current = nowTraining;
+
+    // When transitioning from training → not training, refresh everything
+    if (wasTraining && !nowTraining) {
+      // Small delay to let backend reset client statuses
+      setTimeout(() => fetchData(), 500);
+    }
+    // Also handle legacy check
     if (flGlobal && !flGlobal.is_training && status?.is_training) {
-      fetchData();
+      setTimeout(() => fetchData(), 500);
     }
   }, [flGlobal, status, fetchData]);
+
+  // ── Fetch per-round client metrics when a client is selected ──
+  useEffect(() => {
+    if (!selectedMetricsClient || rounds.length === 0) {
+      setClientRoundDetails([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingClientMetrics(true);
+    // Fetch all round details (they include client_metrics)
+    Promise.all(
+      rounds.map((r) => flApi.round(r.round_number).catch(() => null))
+    ).then((details) => {
+      if (cancelled) return;
+      setClientRoundDetails(details.filter((d): d is FLRoundDetail => d !== null));
+    }).finally(() => {
+      if (!cancelled) setLoadingClientMetrics(false);
+    });
+    return () => { cancelled = true; };
+  }, [selectedMetricsClient, rounds]);
 
   // ── Start training ──
   const handleStart = useCallback(async (cfg: {
@@ -455,7 +568,11 @@ export default function FLTrainingPage() {
     try {
       clearFLProgress();
       clearFLRoundResults();
+      clearFLClientRoundHistory();
       clientLossHistoryRef.current = {};
+
+      // Determine optimistic client list: explicit selection, or all registered clients
+      const optimisticClientIds = cfg.client_ids ?? clients.map((c) => c.client_id);
 
       // Set initial live state immediately so widgets aren't blank (Fix 3)
       useLiveStore.getState().setFLGlobalProgress({
@@ -465,10 +582,55 @@ export default function FLTrainingPage() {
         global_loss: null,
         global_accuracy: null,
         use_he: cfg.use_he,
+        expected_clients: optimisticClientIds.length,
       });
 
-      await flApi.start(cfg);
+      // Pre-populate client progress cards so they render instantly
+      for (const cid of optimisticClientIds) {
+        useLiveStore.getState().setFLClientProgress(cid, {
+          client_id: cid,
+          status: 'waiting',
+          current_epoch: 0,
+          total_epochs: 0,
+          local_loss: 0,
+          local_accuracy: 0,
+          num_samples: 0,
+          progress_pct: 0,
+        });
+      }
+
+      const resp = await flApi.start(cfg);
       setConfigOpen(false);
+
+      // Refine client list from API response (authoritative)
+      if (resp.client_ids && Array.isArray(resp.client_ids)) {
+        const currentProgress = useLiveStore.getState().flClientProgress;
+        // Remove any optimistic clients NOT in the actual response
+        const responseSet = new Set(resp.client_ids);
+        for (const cid of Object.keys(currentProgress)) {
+          if (!responseSet.has(cid)) {
+            const updated = { ...useLiveStore.getState().flClientProgress };
+            delete updated[cid];
+            useLiveStore.setState({ flClientProgress: updated });
+          }
+        }
+        // Add any response clients missing from optimistic set
+        for (const cid of resp.client_ids) {
+          if (!currentProgress[cid]) {
+            useLiveStore.getState().setFLClientProgress(cid, {
+              client_id: cid,
+              status: 'waiting',
+              current_epoch: 0,
+              total_epochs: 0,
+              local_loss: 0,
+              local_accuracy: 0,
+              num_samples: 0,
+              progress_pct: 0,
+            });
+          }
+        }
+      }
+
       fetchData();
     } catch (e: unknown) {
       // Revert optimistic live state on error
@@ -478,7 +640,7 @@ export default function FLTrainingPage() {
     } finally {
       setStarting(false);
     }
-  }, [clearFLProgress, clearFLRoundResults, fetchData]);
+  }, [clearFLProgress, clearFLRoundResults, clearFLClientRoundHistory, fetchData, clients]);
 
   // ── Stop training ──
   const handleStop = useCallback(async () => {
@@ -495,32 +657,99 @@ export default function FLTrainingPage() {
     }
   }, [fetchData]);
 
-  // ── Chart data: merge API rounds with live results ──
+  // ── Chart data: all training sessions with session labels ──
   const chartData = useMemo(() => {
-    const seen = new Set<number>();
-    const data: Array<{ round: string; roundNum: number; accuracy: number | null; loss: number | null }> = [];
-    for (const r of rounds) {
-      seen.add(r.round_number);
+    // Detect session boundaries: round_number resets to 1
+    let sessionNum = 0;
+    const data: Array<{ round: string; roundNum: number; accuracy: number | null; loss: number | null; session: number; id: number }> = [];
+    for (let i = 0; i < rounds.length; i++) {
+      const r = rounds[i];
+      if (r.round_number === 1) sessionNum++;
       data.push({
-        round: `R${r.round_number}`,
+        round: `S${sessionNum}·R${r.round_number}`,
         roundNum: r.round_number,
         accuracy: r.global_accuracy ? +(r.global_accuracy * 100).toFixed(1) : null,
         loss: r.global_loss ? +r.global_loss.toFixed(4) : null,
+        session: sessionNum,
+        id: r.id,
       });
     }
+    // Append live results not yet in API
+    const seenIds = new Set(rounds.map((r) => r.round_number + '_' + sessionNum));
     for (const lr of liveRoundResults) {
-      if (!seen.has(lr.round)) {
+      const key = lr.round + '_' + (sessionNum || 1);
+      if (!seenIds.has(key)) {
         data.push({
-          round: `R${lr.round}`,
+          round: sessionNum > 0 ? `S${sessionNum}·R${lr.round}` : `R${lr.round}`,
           roundNum: lr.round,
           accuracy: lr.accuracy ? +(lr.accuracy * 100).toFixed(1) : null,
           loss: lr.loss ? +lr.loss.toFixed(4) : null,
+          session: sessionNum || 1,
+          id: 0,
         });
       }
     }
-    data.sort((a, b) => a.roundNum - b.roundNum);
     return data;
   }, [rounds, liveRoundResults]);
+
+  // ── Per-client chart data (multi-line) ──
+  const clientChartData = useMemo(() => {
+    // Collect all unique round numbers
+    const roundSet = new Set<number>();
+    for (const entries of Object.values(flClientRoundHistory)) {
+      for (const e of entries) roundSet.add(e.round);
+    }
+    const sortedRounds = [...roundSet].sort((a, b) => a - b);
+    const clientIds = Object.keys(flClientRoundHistory);
+    // Build [{round: 'R1', bank_a_acc: 95.2, bank_a_loss: 0.12, bank_b_acc: ...}, ...]
+    return sortedRounds.map((r) => {
+      const row: Record<string, string | number | null> = { round: `R${r}` };
+      for (const cid of clientIds) {
+        const entry = flClientRoundHistory[cid]?.find((e) => e.round === r);
+        row[`${cid}_acc`] = entry ? +(entry.accuracy * 100).toFixed(1) : null;
+        row[`${cid}_loss`] = entry ? +entry.loss.toFixed(4) : null;
+      }
+      return row;
+    });
+  }, [flClientRoundHistory]);
+
+  const clientChartIds = useMemo(() => Object.keys(flClientRoundHistory), [flClientRoundHistory]);
+
+  // ── Selected client metrics from API round details ──
+  const selectedClientMetrics = useMemo(() => {
+    if (!selectedMetricsClient || clientRoundDetails.length === 0) return [];
+    return clientRoundDetails
+      .map((rd) => {
+        const cm = rd.client_metrics.find((m) => m.client_id === selectedMetricsClient);
+        if (!cm) return null;
+        return {
+          round: `R${rd.round_number}`,
+          roundNum: rd.round_number,
+          accuracy: +(cm.local_accuracy * 100).toFixed(1),
+          loss: +cm.local_loss.toFixed(4),
+          samples: cm.num_samples,
+          training_time: +cm.training_time_sec.toFixed(1),
+          encrypted: cm.encrypted,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .sort((a, b) => a.roundNum - b.roundNum);
+  }, [selectedMetricsClient, clientRoundDetails]);
+
+  // ── Global metrics summary from historical rounds ──
+  const globalMetricsSummary = useMemo(() => {
+    if (rounds.length === 0) return null;
+    const latest = rounds[rounds.length - 1];
+    const avgDuration = rounds.reduce((sum, r) => sum + (r.duration_seconds ?? 0), 0) / rounds.length;
+    const bestAccRound = rounds.reduce((best, r) =>
+      (r.global_accuracy ?? 0) > (best.global_accuracy ?? 0) ? r : best, rounds[0]);
+    const bestLossRound = rounds.reduce((best, r) => {
+      if (r.global_loss == null) return best;
+      if (best.global_loss == null) return r;
+      return r.global_loss < best.global_loss ? r : best;
+    }, rounds[0]);
+    return { latest, avgDuration, bestAccRound, bestLossRound, totalRounds: rounds.length };
+  }, [rounds]);
 
   // ── Replay controls ──
   const replayRound = replayIdx !== null && replayIdx < chartData.length
@@ -549,7 +778,16 @@ export default function FLTrainingPage() {
     ? Math.min(100, ((flGlobal.current_round ?? 0) / Math.max(flGlobal.total_rounds, 1)) * 100)
     : 0;
 
-  const clientProgressEntries = Object.values(flClientProgress);
+  // Filter out phantom clients (Flower UUIDs like "ipv4:...") — only show registered client_ids
+  const registeredClientIds = useMemo(() => new Set(clients.map((c) => c.client_id)), [clients]);
+  const clientProgressEntries = useMemo(() => {
+    const entries = Object.values(flClientProgress);
+    // If we have registered clients, filter to only those
+    if (registeredClientIds.size > 0) {
+      return entries.filter((cp) => registeredClientIds.has(cp.client_id));
+    }
+    return entries;
+  }, [flClientProgress, registeredClientIds]);
   const activeStep = clientProgressEntries.length > 0
     ? statusToStep(clientProgressEntries[0].status)
     : 'distribute';
@@ -658,7 +896,9 @@ export default function FLTrainingPage() {
           {
             icon: Users,
             label: 'Clients',
-            value: isLive ? clientProgressEntries.length : (status?.active_clients ?? clients.length),
+            value: isLive
+              ? (clientProgressEntries.length || flGlobal?.expected_clients || clients.length)
+              : (status?.active_clients ?? clients.length),
             color: 'var(--warning)',
           },
           {
@@ -736,7 +976,7 @@ export default function FLTrainingPage() {
           </motion.div>
 
           {/* Per-Client Progress Cards */}
-          {clientProgressEntries.length > 0 && (
+          {clientProgressEntries.length > 0 ? (
             <motion.div variants={fadeUp}>
               <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>
                 Client Training Progress
@@ -751,10 +991,69 @@ export default function FLTrainingPage() {
                 ))}
               </div>
             </motion.div>
+          ) : (
+            <motion.div variants={fadeUp}>
+              <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>
+                Client Training Progress
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {Array.from({ length: flGlobal?.expected_clients ?? 2 }).map((_, i) => (
+                  <div key={`skeleton-${i}`} className="card" style={{ padding: 16 }}>
+                    <div className="flex items-center gap-3" style={{ marginBottom: 12 }}>
+                      <div style={{
+                        width: 10, height: 10, borderRadius: '50%',
+                        background: 'var(--text-muted)', opacity: 0.3,
+                        animation: 'pulse 1.5s ease-in-out infinite',
+                      }} />
+                      <div style={{
+                        height: 14, width: 80, borderRadius: 4,
+                        background: 'var(--bg-secondary)',
+                        animation: 'pulse 1.5s ease-in-out infinite',
+                      }} />
+                    </div>
+                    <div style={{
+                      height: 8, borderRadius: 4, background: 'var(--bg-secondary)',
+                      marginBottom: 8, animation: 'pulse 1.5s ease-in-out infinite',
+                    }} />
+                    <div style={{
+                      height: 12, width: '60%', borderRadius: 4,
+                      background: 'var(--bg-secondary)',
+                      animation: 'pulse 1.5s ease-in-out infinite',
+                    }} />
+                    <p style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 10, textAlign: 'center' }}>
+                      Waiting for client to connect…
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
           )}
 
-          {/* Live Accuracy & Loss Chart */}
-          {liveRoundResults.length > 0 && (
+          {/* Global Metrics Summary — always visible when we have data */}
+          {flGlobal && (flGlobal.global_accuracy != null || flGlobal.aggregation_method) && (
+            <motion.div variants={fadeUp} className="card" style={{ padding: 20 }}>
+              <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>
+                Global Metrics
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                {[
+                  { label: 'Accuracy', value: flGlobal.global_accuracy != null ? `${(flGlobal.global_accuracy * 100).toFixed(1)}%` : '—', color: 'var(--success)' },
+                  { label: 'Loss', value: flGlobal.global_loss != null ? flGlobal.global_loss.toFixed(4) : '—', color: 'var(--danger)' },
+                  { label: 'Round', value: `${flGlobal.current_round} / ${flGlobal.total_rounds}`, color: 'var(--accent)' },
+                  { label: 'Aggregation', value: flGlobal.aggregation_method ?? 'FedAvg', color: 'var(--text-primary)' },
+                  { label: 'Encryption', value: flGlobal.use_he !== false ? 'CKKS HE' : 'None', color: 'var(--warning)' },
+                ].map((m) => (
+                  <div key={m.label} style={{ padding: '10px 12px', borderRadius: 8, background: 'var(--bg-primary)', textAlign: 'center' }}>
+                    <p style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 2 }}>{m.label}</p>
+                    <p style={{ fontSize: 16, fontWeight: 700, color: m.color }}>{m.value}</p>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+
+          {/* Live Accuracy & Loss Charts — shown as soon as any round data exists */}
+          {chartData.length > 0 && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <motion.div variants={fadeUp} className="card" style={{ padding: 24 }}>
                 <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 16 }}>
@@ -794,6 +1093,73 @@ export default function FLTrainingPage() {
                       <Tooltip {...tooltipStyle} />
                       <Area type="monotone" dataKey="loss" stroke="#EF4444" strokeWidth={2} fill="url(#liveGrad)" dot={{ r: 3 }} name="Loss" animationDuration={400} />
                     </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </motion.div>
+            </div>
+          )}
+
+          {/* Per-Client Multi-line Charts — accuracy & loss per client over rounds */}
+          {clientChartData.length > 0 && clientChartIds.length > 0 && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <motion.div variants={fadeUp} className="card" style={{ padding: 24 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 16 }}>
+                  Per-Client Accuracy
+                  <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: 'var(--success)' }}>● LIVE</span>
+                </h3>
+                <div style={{ height: 220 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={clientChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                      <XAxis dataKey="round" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
+                      <YAxis domain={[0, 100]} tick={{ fill: 'var(--text-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
+                      <Tooltip {...tooltipStyle} />
+                      <Legend wrapperStyle={{ fontSize: 10 }} />
+                      {clientChartIds.map((cid, i) => (
+                        <Line
+                          key={cid}
+                          type="monotone"
+                          dataKey={`${cid}_acc`}
+                          stroke={CLIENT_COLORS[i % CLIENT_COLORS.length]}
+                          strokeWidth={2}
+                          dot={{ r: 3 }}
+                          name={cid}
+                          animationDuration={400}
+                          connectNulls
+                        />
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </motion.div>
+
+              <motion.div variants={fadeUp} className="card" style={{ padding: 24 }}>
+                <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 16 }}>
+                  Per-Client Loss
+                  <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: 'var(--success)' }}>● LIVE</span>
+                </h3>
+                <div style={{ height: 220 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={clientChartData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                      <XAxis dataKey="round" tick={{ fill: 'var(--text-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fill: 'var(--text-muted)', fontSize: 10 }} axisLine={false} tickLine={false} />
+                      <Tooltip {...tooltipStyle} />
+                      <Legend wrapperStyle={{ fontSize: 10 }} />
+                      {clientChartIds.map((cid, i) => (
+                        <Line
+                          key={cid}
+                          type="monotone"
+                          dataKey={`${cid}_loss`}
+                          stroke={CLIENT_COLORS[i % CLIENT_COLORS.length]}
+                          strokeWidth={2}
+                          dot={{ r: 3 }}
+                          name={cid}
+                          animationDuration={400}
+                          connectNulls
+                        />
+                      ))}
+                    </LineChart>
                   </ResponsiveContainer>
                 </div>
               </motion.div>
@@ -922,9 +1288,12 @@ export default function FLTrainingPage() {
               roundNum: latestApiRound.round_number,
               accuracy: latestApiRound.global_accuracy ? +(latestApiRound.global_accuracy * 100).toFixed(1) : null,
               loss: latestApiRound.global_loss ? +latestApiRound.global_loss.toFixed(4) : null,
+              id: latestApiRound.id,
             } : null);
             if (!displayRound) return null;
-            const matchedRound = rounds.find((r) => r.round_number === displayRound.roundNum);
+            const matchedRound = displayRound.id
+              ? rounds.find((r) => r.id === displayRound.id)
+              : rounds.find((r) => r.round_number === displayRound.roundNum);
             return (
               <motion.div variants={fadeUp} className="card" style={{ padding: 24 }}>
                 <h3 style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>
@@ -948,6 +1317,275 @@ export default function FLTrainingPage() {
               </motion.div>
             );
           })()}
+        </>
+      )}
+
+      {/* ════════════════════════════════════════════════════
+         METRICS & ANALYTICS (always visible when data exists)
+         ════════════════════════════════════════════════════ */}
+      {(chartData.length > 0 || globalMetricsSummary) && (
+        <>
+          {/* Section Header */}
+          <motion.div variants={fadeUp} style={{ marginTop: 8 }}>
+            <div className="flex items-center gap-3" style={{ marginBottom: 16 }}>
+              <BarChart3 style={{ width: 20, height: 20, color: 'var(--accent)' }} />
+              <div>
+                <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--text-primary)' }}>
+                  Metrics &amp; Analytics
+                </h2>
+                <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Global performance overview and per-client breakdown
+                </p>
+              </div>
+            </div>
+          </motion.div>
+
+          {/* ── Global Metrics Overview Card ── */}
+          {globalMetricsSummary && (
+            <motion.div variants={fadeUp} className="card" style={{ padding: 24, borderLeft: '3px solid var(--accent)' }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 16 }}>
+                Global Model Performance
+              </h3>
+
+              {/* Primary metrics row */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3" style={{ marginBottom: 16 }}>
+                {[
+                  {
+                    label: 'Accuracy',
+                    value: globalMetricsSummary.latest.global_accuracy != null
+                      ? `${(globalMetricsSummary.latest.global_accuracy * 100).toFixed(1)}%` : '—',
+                    color: 'var(--success)',
+                    sub: globalMetricsSummary.bestAccRound.global_accuracy != null
+                      ? `Best: ${(globalMetricsSummary.bestAccRound.global_accuracy * 100).toFixed(1)}% (R${globalMetricsSummary.bestAccRound.round_number})`
+                      : undefined,
+                  },
+                  {
+                    label: 'Loss',
+                    value: globalMetricsSummary.latest.global_loss != null
+                      ? globalMetricsSummary.latest.global_loss.toFixed(4) : '—',
+                    color: 'var(--danger)',
+                    sub: globalMetricsSummary.bestLossRound.global_loss != null
+                      ? `Best: ${globalMetricsSummary.bestLossRound.global_loss.toFixed(4)} (R${globalMetricsSummary.bestLossRound.round_number})`
+                      : undefined,
+                  },
+                  {
+                    label: 'F1 Score',
+                    value: globalMetricsSummary.latest.global_f1 != null
+                      ? `${(globalMetricsSummary.latest.global_f1 * 100).toFixed(1)}%` : '—',
+                    color: '#8B5CF6',
+                  },
+                  {
+                    label: 'Precision',
+                    value: globalMetricsSummary.latest.global_precision != null
+                      ? `${(globalMetricsSummary.latest.global_precision * 100).toFixed(1)}%` : '—',
+                    color: '#F59E0B',
+                  },
+                  {
+                    label: 'Recall',
+                    value: globalMetricsSummary.latest.global_recall != null
+                      ? `${(globalMetricsSummary.latest.global_recall * 100).toFixed(1)}%` : '—',
+                    color: '#EC4899',
+                  },
+                  {
+                    label: 'Total Rounds',
+                    value: globalMetricsSummary.totalRounds,
+                    color: 'var(--accent)',
+                  },
+                ].map((m) => (
+                  <div key={m.label} style={{
+                    padding: '12px 14px', borderRadius: 10,
+                    background: 'var(--bg-primary)', textAlign: 'center',
+                    border: '1px solid var(--border)',
+                  }}>
+                    <p style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                      {m.label}
+                    </p>
+                    <p style={{ fontSize: 22, fontWeight: 800, color: m.color }}>{m.value}</p>
+                    {m.sub && (
+                      <p style={{ fontSize: 9, color: 'var(--text-muted)', marginTop: 4 }}>{m.sub}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Secondary info row */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {[
+                  {
+                    label: 'Aggregation Method',
+                    value: globalMetricsSummary.latest.aggregation_method || 'FedAvg',
+                    icon: '⚙️',
+                  },
+                  {
+                    label: 'Encryption',
+                    value: globalMetricsSummary.latest.he_scheme || 'CKKS',
+                    icon: '🔒',
+                  },
+                  {
+                    label: 'Avg Duration / Round',
+                    value: globalMetricsSummary.avgDuration > 0
+                      ? `${globalMetricsSummary.avgDuration.toFixed(1)}s` : '—',
+                    icon: '⏱️',
+                  },
+                  {
+                    label: 'Clients per Round',
+                    value: globalMetricsSummary.latest.num_clients,
+                    icon: '👥',
+                  },
+                ].map((item) => (
+                  <div key={item.label} style={{
+                    padding: '10px 14px', borderRadius: 8,
+                    background: 'var(--bg-primary)', border: '1px solid var(--border)',
+                    display: 'flex', alignItems: 'center', gap: 10,
+                  }}>
+                    <span style={{ fontSize: 18 }}>{item.icon}</span>
+                    <div>
+                      <p style={{ fontSize: 10, color: 'var(--text-muted)' }}>{item.label}</p>
+                      <p style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>{item.value}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+
+          {/* ── Per-Client Metrics Section ── */}
+          <motion.div variants={fadeUp} className="card" style={{ padding: 24, borderLeft: '3px solid #8B5CF6' }}>
+            <div className="flex items-center justify-between flex-wrap gap-3" style={{ marginBottom: 16 }}>
+              <div className="flex items-center gap-2">
+                <Users style={{ width: 18, height: 18, color: '#8B5CF6' }} />
+                <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)' }}>
+                  Per-Client Analytics
+                </h3>
+              </div>
+
+              {/* Client Selector Dropdown */}
+              <div style={{ position: 'relative' }}>
+                <select
+                  value={selectedMetricsClient}
+                  onChange={(e) => setSelectedMetricsClient(e.target.value)}
+                  style={{
+                    appearance: 'none',
+                    padding: '8px 36px 8px 14px',
+                    borderRadius: 8,
+                    border: '1px solid var(--border)',
+                    background: 'var(--bg-primary)',
+                    color: 'var(--text-primary)',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    minWidth: 200,
+                    outline: 'none',
+                  }}
+                >
+                  <option value="">Select a client…</option>
+                  {clients.map((c) => (
+                    <option key={c.client_id} value={c.client_id}>
+                      {c.name || c.client_id}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown style={{
+                  position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                  width: 16, height: 16, color: 'var(--text-muted)', pointerEvents: 'none',
+                }} />
+              </div>
+            </div>
+
+            {!selectedMetricsClient ? (
+              <div style={{ textAlign: 'center', padding: '32px 16px' }}>
+                <Users style={{ width: 36, height: 36, color: 'var(--text-muted)', margin: '0 auto 12px', opacity: 0.3 }} />
+                <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                  Select a client from the dropdown to view its per-round training metrics.
+                </p>
+              </div>
+            ) : loadingClientMetrics ? (
+              <div className="flex items-center justify-center" style={{ padding: 32 }}>
+                <Loader2 className="w-6 h-6 animate-spin" style={{ color: '#8B5CF6' }} />
+                <span style={{ marginLeft: 8, fontSize: 13, color: 'var(--text-muted)' }}>Loading client metrics…</span>
+              </div>
+            ) : selectedClientMetrics.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '24px 16px' }}>
+                <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>
+                  No metric data found for <strong>{selectedMetricsClient}</strong>.
+                </p>
+              </div>
+            ) : (
+              <>
+                {/* Client Summary Stats */}
+                {(() => {
+                  const latestCM = selectedClientMetrics[selectedClientMetrics.length - 1];
+                  const bestAcc = selectedClientMetrics.reduce((best, m) => m.accuracy > best.accuracy ? m : best);
+                  const avgLoss = selectedClientMetrics.reduce((sum, m) => sum + m.loss, 0) / selectedClientMetrics.length;
+                  const totalSamples = selectedClientMetrics.reduce((sum, m) => sum + m.samples, 0);
+                  const avgTrainTime = selectedClientMetrics.reduce((sum, m) => sum + m.training_time, 0) / selectedClientMetrics.length;
+
+                  return (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3" style={{ marginBottom: 20 }}>
+                      {[
+                        { label: 'Latest Accuracy', value: `${latestCM.accuracy}%`, color: 'var(--success)' },
+                        { label: 'Best Accuracy', value: `${bestAcc.accuracy}% (${bestAcc.round})`, color: '#10B981' },
+                        { label: 'Latest Loss', value: latestCM.loss.toFixed(4), color: 'var(--danger)' },
+                        { label: 'Avg Loss', value: avgLoss.toFixed(4), color: '#F59E0B' },
+                        { label: 'Total Samples', value: totalSamples.toLocaleString(), color: 'var(--accent)' },
+                        { label: 'Avg Train Time', value: `${avgTrainTime.toFixed(1)}s`, color: '#8B5CF6' },
+                      ].map((m) => (
+                        <div key={m.label} style={{
+                          padding: '10px 12px', borderRadius: 8,
+                          background: 'var(--bg-primary)', textAlign: 'center',
+                          border: '1px solid var(--border)',
+                        }}>
+                          <p style={{ fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                            {m.label}
+                          </p>
+                          <p style={{ fontSize: 16, fontWeight: 700, color: m.color, marginTop: 2 }}>{m.value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+
+                {/* Per-round detail table */}
+                <div style={{ marginTop: 16, overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ borderBottom: '2px solid var(--border)' }}>
+                        {['Round', 'Accuracy', 'Loss', 'Samples', 'Train Time', 'Encrypted'].map((h) => (
+                          <th key={h} style={{
+                            padding: '8px 12px', textAlign: 'left',
+                            color: 'var(--text-muted)', fontWeight: 600, fontSize: 11,
+                            textTransform: 'uppercase', letterSpacing: 0.5,
+                          }}>
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedClientMetrics.map((m) => (
+                        <tr key={m.round} style={{ borderBottom: '1px solid var(--border)' }}>
+                          <td style={{ padding: '8px 12px', fontWeight: 600, color: 'var(--accent)' }}>{m.round}</td>
+                          <td style={{ padding: '8px 12px', color: 'var(--success)', fontWeight: 600 }}>{m.accuracy}%</td>
+                          <td style={{ padding: '8px 12px', color: 'var(--danger)' }}>{m.loss.toFixed(4)}</td>
+                          <td style={{ padding: '8px 12px', color: 'var(--text-primary)' }}>{m.samples.toLocaleString()}</td>
+                          <td style={{ padding: '8px 12px', color: 'var(--text-primary)' }}>{m.training_time}s</td>
+                          <td style={{ padding: '8px 12px' }}>
+                            <span style={{
+                              padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600,
+                              background: m.encrypted ? 'var(--success-light)' : 'var(--bg-secondary)',
+                              color: m.encrypted ? 'var(--success)' : 'var(--text-muted)',
+                            }}>
+                              {m.encrypted ? 'Yes' : 'No'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </motion.div>
         </>
       )}
 

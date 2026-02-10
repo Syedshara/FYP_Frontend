@@ -25,13 +25,25 @@ export interface LivePrediction {
 
 export interface FLClientProgress {
   client_id: string;
-  status: string;           // training | encrypting | sending | idle | done
+  status: string;           // training | encrypting | sending | idle | done | waiting
   current_epoch: number;
   total_epochs: number;
   local_loss: number;
   local_accuracy: number;
   num_samples: number;
   progress_pct: number;     // 0-100
+  // ── Per-batch detailed progress (Task 4) ──
+  batch?: number;                // current batch within epoch
+  total_batches?: number;        // batches per epoch
+  batches_processed?: number;    // cumulative batches across all epochs
+  grand_total_batches?: number;  // total batches across all epochs
+  samples_processed?: number;    // cumulative samples processed
+  total_samples?: number;        // total samples to process
+  throughput?: number;           // samples/sec
+  eta_seconds?: number;          // estimated time remaining (sec)
+  current_loss?: number;         // running loss
+  current_accuracy?: number;     // running accuracy
+  last_update_time?: string;     // ISO timestamp of last progress update
 }
 
 export interface FLGlobalProgress {
@@ -42,6 +54,7 @@ export interface FLGlobalProgress {
   global_accuracy: number | null;
   aggregation_method?: string;
   use_he?: boolean;
+  expected_clients?: number;
 }
 
 export interface LiveClientStatus {
@@ -80,6 +93,11 @@ interface LiveState {
   flRoundResults: Array<{ round: number; loss: number | null; accuracy: number | null }>;
   addFLRoundResult: (round: number, loss: number | null, accuracy: number | null) => void;
   clearFLRoundResults: () => void;
+
+  // FL per-client round history (for multi-line charts)
+  flClientRoundHistory: Record<string, Array<{ round: number; loss: number; accuracy: number }>>;
+  addFLClientRoundEntry: (clientId: string, round: number, loss: number, accuracy: number) => void;
+  clearFLClientRoundHistory: () => void;
 
   // Client statuses (container running/stopped, client active/inactive)
   clientStatuses: Record<number, LiveClientStatus>;
@@ -124,6 +142,21 @@ export const useLiveStore = create<LiveState>()((set) => ({
     })),
   clearFLRoundResults: () =>
     set({ flRoundResults: [] }),
+
+  // ── FL Per-Client Round History ──
+  flClientRoundHistory: {},
+  addFLClientRoundEntry: (clientId, round, loss, accuracy) =>
+    set((state) => {
+      const prev = state.flClientRoundHistory[clientId] ?? [];
+      return {
+        flClientRoundHistory: {
+          ...state.flClientRoundHistory,
+          [clientId]: [...prev, { round, loss, accuracy }],
+        },
+      };
+    }),
+  clearFLClientRoundHistory: () =>
+    set({ flClientRoundHistory: {} }),
 
   // ── Client Statuses ──
   clientStatuses: {},

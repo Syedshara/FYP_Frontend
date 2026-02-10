@@ -284,6 +284,10 @@ select.input option {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
 @keyframes pulse-glow {
   0%, 100% { box-shadow: 0 0 0 0 var(--accent-glow); }
   50%      { box-shadow: 0 0 0 8px transparent; }

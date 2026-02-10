@@ -15,6 +15,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     setFLClientProgress,
     setFLGlobalProgress,
     addFLRoundResult,
+    addFLClientRoundEntry,
     clearFLProgress,
     setClientStatus,
     setDeviceStatus,
@@ -67,9 +68,13 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
       else if (phase === 'encrypting') status = 'encrypting';
       else if (phase === 'aggregating') status = 'done';
 
-      // Calculate progress percentage
+      // Calculate progress percentage — prefer fine-grained batch progress
       let progressPct = 0;
-      if (totalEpochs > 0 && epoch > 0) {
+      const batchesProcessed = (d.batches_processed ?? 0) as number;
+      const grandTotalBatches = (d.grand_total_batches ?? 0) as number;
+      if (grandTotalBatches > 0 && batchesProcessed > 0) {
+        progressPct = Math.min(100, (batchesProcessed / grandTotalBatches) * 100);
+      } else if (totalEpochs > 0 && epoch > 0) {
         progressPct = Math.min(100, (epoch / totalEpochs) * 100);
       }
       if (phase === 'sending_weights') progressPct = 100;
@@ -83,16 +88,30 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         local_accuracy: (d.local_accuracy ?? d.accuracy ?? 0) as number,
         num_samples: (d.num_samples ?? 0) as number,
         progress_pct: progressPct,
+        // Per-batch detailed fields
+        batch: (d.batch ?? undefined) as number | undefined,
+        total_batches: (d.total_batches ?? undefined) as number | undefined,
+        batches_processed: batchesProcessed || undefined,
+        grand_total_batches: grandTotalBatches || undefined,
+        samples_processed: (d.samples_processed ?? undefined) as number | undefined,
+        total_samples: (d.total_samples ?? undefined) as number | undefined,
+        throughput: (d.throughput ?? undefined) as number | undefined,
+        eta_seconds: (d.eta_seconds ?? undefined) as number | undefined,
+        current_loss: (d.current_loss ?? undefined) as number | undefined,
+        current_accuracy: (d.current_accuracy ?? undefined) as number | undefined,
+        last_update_time: (d.last_update_time ?? undefined) as string | undefined,
       });
 
       // Also update global progress if round info is present
       if (d.round != null) {
+        const existing = useLiveStore.getState().flGlobalProgress;
         setFLGlobalProgress({
           is_training: true,
           current_round: d.round as number,
-          total_rounds: (d.total_rounds ?? 0) as number,
-          global_loss: null,
-          global_accuracy: null,
+          total_rounds: (d.total_rounds ?? existing?.total_rounds ?? 0) as number,
+          global_loss: existing?.global_loss ?? null,
+          global_accuracy: existing?.global_accuracy ?? null,
+          use_he: existing?.use_he,
         });
       }
     }));
@@ -134,6 +153,13 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             num_samples: cm.num_samples,
             progress_pct: 100,
           });
+          // Accumulate per-client round history for charts
+          addFLClientRoundEntry(
+            cm.client_id,
+            d.round_number as number,
+            cm.local_loss,
+            cm.local_accuracy,
+          );
         }
       }
     }));
@@ -142,6 +168,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     unsubs.push(subscribe('training_start', (msg: WSMessage) => {
       const d = msg.data;
       const totalRounds = (d.total_rounds ?? d.num_rounds ?? 0) as number;
+      const clientIds = d.client_ids as string[] | undefined;
       setFLGlobalProgress({
         is_training: true,
         current_round: 0,
@@ -149,10 +176,10 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
         global_loss: null,
         global_accuracy: null,
         use_he: d.use_he as boolean | undefined,
+        expected_clients: clientIds?.length ?? useLiveStore.getState().flGlobalProgress?.expected_clients,
       });
 
       // Create initial client progress entries from client_ids if provided
-      const clientIds = d.client_ids as string[] | undefined;
       if (clientIds && Array.isArray(clientIds)) {
         for (const cid of clientIds) {
           setFLClientProgress(cid, {
@@ -207,7 +234,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
     return () => { unsubs.forEach((u) => u()); };
   }, [
     subscribe, addPrediction, setFLClientProgress, setFLGlobalProgress,
-    addFLRoundResult, clearFLProgress, setClientStatus, setDeviceStatus,
+    addFLRoundResult, addFLClientRoundEntry, clearFLProgress, setClientStatus, setDeviceStatus,
   ]);
 
   return <>{children}</>;

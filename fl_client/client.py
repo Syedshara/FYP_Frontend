@@ -127,6 +127,10 @@ class ClientSequenceDataset(Dataset):
 # ═══════════════════════════════════════════════════════════
 #  Local training function
 # ═══════════════════════════════════════════════════════════
+# Throttle interval for per-batch progress reports (seconds)
+_PROGRESS_THROTTLE = 2.0
+
+
 def local_train(
     model: CNN_LSTM_IDS,
     dataloader: DataLoader,
@@ -134,14 +138,29 @@ def local_train(
     lr: float,
     max_batches: int = 50,
     server_round: int = 0,
+    total_rounds: int = 0,
 ) -> dict:
-    """Train model locally and return metrics. Reports per-epoch progress."""
+    """Train model locally and return metrics.
+
+    Reports per-batch progress (throttled to every 2 s) with:
+    batches_processed, total_batches, samples_processed, total_samples,
+    throughput (samples/sec), eta_seconds, current_loss, current_accuracy.
+    """
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     total_loss = 0.0
     total_correct = 0
     total_samples = 0
     t0 = time.time()
+    last_report_time = 0.0  # ensures first batch reports immediately
+
+    # Pre-calculate totals for progress tracking
+    total_batches_per_epoch = min(len(dataloader), max_batches)
+    grand_total_batches = total_batches_per_epoch * epochs
+    # Estimate total samples (batch_size * total_batches) — refined as we go
+    batch_size_est = dataloader.batch_size or 32
+    grand_total_samples = batch_size_est * grand_total_batches
+    global_batch_idx = 0  # cumulative batch counter across all epochs
 
     for epoch in range(epochs):
         epoch_loss = 0.0
@@ -165,6 +184,7 @@ def local_train(
             epoch_samples += batch_size
             total_loss += loss.item() * batch_size
             total_samples += batch_size
+            global_batch_idx += 1
 
             # Compute batch accuracy
             predicted = (torch.sigmoid(preds) > 0.5).float()
@@ -172,16 +192,43 @@ def local_train(
             epoch_correct += batch_correct
             total_correct += batch_correct
 
-        # Report epoch progress
-        epoch_acc = epoch_correct / max(epoch_samples, 1)
-        _report_progress({
-            "round": server_round,
-            "phase": "training",
-            "epoch": epoch + 1,
-            "total_epochs": epochs,
-            "epoch_loss": epoch_loss / max(epoch_samples, 1),
-            "message": f"Epoch {epoch + 1}/{epochs} — loss={epoch_loss / max(epoch_samples, 1):.4f} acc={epoch_acc:.4f}",
-        })
+            # ── Throttled per-batch progress report ──
+            now = time.time()
+            if now - last_report_time >= _PROGRESS_THROTTLE or global_batch_idx == grand_total_batches:
+                last_report_time = now
+                elapsed = now - t0
+                throughput = total_samples / max(elapsed, 0.001)
+                # Refine total samples estimate with actual batch size
+                grand_total_samples = batch_size * grand_total_batches
+                remaining_samples = grand_total_samples - total_samples
+                eta_seconds = remaining_samples / max(throughput, 0.001)
+                cur_loss = total_loss / max(total_samples, 1)
+                cur_acc = total_correct / max(total_samples, 1)
+
+                _report_progress({
+                    "round": server_round,
+                    "total_rounds": total_rounds,
+                    "phase": "training",
+                    "epoch": epoch + 1,
+                    "total_epochs": epochs,
+                    "epoch_loss": epoch_loss / max(epoch_samples, 1),
+                    "local_accuracy": cur_acc,
+                    "batch": batch_idx + 1,
+                    "total_batches": total_batches_per_epoch,
+                    "batches_processed": global_batch_idx,
+                    "grand_total_batches": grand_total_batches,
+                    "samples_processed": total_samples,
+                    "total_samples": grand_total_samples,
+                    "throughput": round(throughput, 1),
+                    "eta_seconds": round(max(eta_seconds, 0), 1),
+                    "current_loss": round(cur_loss, 6),
+                    "current_accuracy": round(cur_acc, 6),
+                    "last_update_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "message": (
+                        f"Epoch {epoch + 1}/{epochs} Batch {batch_idx + 1}/{total_batches_per_epoch}"
+                        f" — loss={cur_loss:.4f} acc={cur_acc:.4f} {throughput:.0f} samp/s"
+                    ),
+                })
 
     elapsed = time.time() - t0
     avg_loss = total_loss / max(total_samples, 1)
@@ -226,27 +273,30 @@ def run_train_mode():
             self.set_parameters(parameters)
 
             server_round = config.get("server_round", 0)
+            total_rounds = int(config.get("total_rounds", 0))
             epochs = int(config.get("local_epochs", DEFAULT_CONFIG["LOCAL_EPOCHS"]))
             lr = float(config.get("lr", DEFAULT_CONFIG["LEARNING_RATE"]))
             max_batches = int(config.get("max_batches", DEFAULT_CONFIG["MAX_BATCHES"]))
 
             log.info(
-                "[%s] Round %s — training %d epochs (lr=%.4f, max_batches=%d)",
-                CLIENT_ID, server_round, epochs, lr, max_batches,
+                "[%s] Round %s/%s — training %d epochs (lr=%.4f, max_batches=%d)",
+                CLIENT_ID, server_round, total_rounds, epochs, lr, max_batches,
             )
 
             # Report: starting local training
             _report_progress({
                 "round": server_round,
+                "total_rounds": total_rounds,
                 "phase": "training",
                 "epoch": 0,
                 "total_epochs": epochs,
-                "message": f"Starting local training for round {server_round}",
+                "message": f"Starting local training for round {server_round}/{total_rounds}",
             })
 
             metrics = local_train(
                 self.model, self.dataloader, epochs, lr, max_batches,
                 server_round=server_round,
+                total_rounds=total_rounds,
             )
 
             log.info(
@@ -258,13 +308,16 @@ def run_train_mode():
             # Report: sending weights
             _report_progress({
                 "round": server_round,
+                "total_rounds": total_rounds,
                 "phase": "sending_weights",
                 "loss": metrics["loss"],
                 "num_samples": metrics["num_samples"],
                 "training_time_sec": metrics.get("training_time_sec", 0),
-                "message": f"Round {server_round} training complete, sending weights",
+                "message": f"Round {server_round}/{total_rounds} training complete, sending weights",
             })
 
+            # Include CLIENT_ID so server can map Flower CID → registered client
+            metrics["client_id"] = CLIENT_ID
             return self.get_parameters(config), self.num_samples, metrics
 
         def evaluate(self, parameters: NDArrays, config: dict):

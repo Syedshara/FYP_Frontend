@@ -176,13 +176,15 @@ async def get_status(
 ):
     """Get current FL training status."""
     rounds = await fl_service.get_all_rounds(db)
-    active_clients = await fl_service.get_active_fl_clients(db)
+    all_clients = await fl_service.get_all_fl_clients(db)
+    # Count clients that are active or currently training
+    active_count = sum(1 for c in all_clients if c.status in ("active", "training"))
 
     return FLStatusResponse(
-        is_training=False,  # TODO: check if FL server is running
+        is_training=any(c.status == "training" for c in all_clients),
         current_round=rounds[-1].round_number if rounds else None,
         total_rounds=len(rounds),
-        active_clients=len(active_clients),
+        active_clients=active_count,
         total_rounds_completed=len(rounds),
     )
 

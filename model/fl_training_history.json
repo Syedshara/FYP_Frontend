@@ -4,13 +4,6 @@
     "aggregation": "fedavg_he_ckks",
     "he_poly_modulus": "16384",
     "num_encrypted_layers": "4",
-    "aggregation_time_sec": 0.49372267723083496
-  },
-  {
-    "round": 2,
-    "aggregation": "fedavg_he_ckks",
-    "he_poly_modulus": "16384",
-    "num_encrypted_layers": "4",
-    "aggregation_time_sec": 0.32021188735961914
+    "aggregation_time_sec": 0.18535470962524414
   }
 ]

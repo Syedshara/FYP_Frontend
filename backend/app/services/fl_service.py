@@ -82,17 +82,20 @@ async def create_client_metric(
 
 
 async def get_all_rounds(db: AsyncSession) -> list[FLRound]:
-    """Return all FL rounds ordered by round number."""
+    """Return all FL rounds across every training session, ordered by id."""
     result = await db.execute(
-        select(FLRound).order_by(FLRound.round_number)
+        select(FLRound).order_by(FLRound.id)
     )
     return list(result.scalars().all())
 
 
 async def get_round_by_number(db: AsyncSession, round_number: int) -> Optional[FLRound]:
-    """Get a specific round by its number."""
+    """Get a specific round by its number (latest session's version)."""
     result = await db.execute(
-        select(FLRound).where(FLRound.round_number == round_number)
+        select(FLRound)
+        .where(FLRound.round_number == round_number)
+        .order_by(FLRound.id.desc())
+        .limit(1)
     )
     return result.scalar_one_or_none()
 

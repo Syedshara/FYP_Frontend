@@ -79,6 +79,19 @@ class FLProgressIn(BaseModel):
     num_clients: Optional[int] = None
     training_time_sec: Optional[float] = None
     message: Optional[str] = None
+    # ── Per-batch detailed progress (Task 4) ──
+    batch: Optional[int] = None
+    total_batches: Optional[int] = None
+    batches_processed: Optional[int] = None
+    grand_total_batches: Optional[int] = None
+    samples_processed: Optional[int] = None
+    total_samples: Optional[int] = None
+    throughput: Optional[float] = None
+    eta_seconds: Optional[float] = None
+    current_loss: Optional[float] = None
+    current_accuracy: Optional[float] = None
+    local_accuracy: Optional[float] = None
+    last_update_time: Optional[str] = None
 
 
 class FLRoundIn(BaseModel):
@@ -270,10 +283,14 @@ async def fl_round_complete(
 
 
 @router.post("/fl/status", status_code=200)
-async def fl_status_change(body: FLStatusIn):
+async def fl_status_change(
+    body: FLStatusIn,
+    db: AsyncSession = Depends(get_db),
+):
     """
     Training session status change from FL server.
     Broadcasts start/complete/failed events via WebSocket.
+    When training completes, resets all 'training' clients back to 'active'.
     """
     if body.status == "started":
         msg_type = WSMessageType.TRAINING_START
@@ -281,6 +298,14 @@ async def fl_status_change(body: FLStatusIn):
         msg_type = WSMessageType.TRAINING_STOP
     else:
         msg_type = WSMessageType.FL_PROGRESS
+
+    # When training completes (or fails), reset client statuses
+    if body.status in ("completed", "failed"):
+        all_clients = await fl_service.get_all_fl_clients(db)
+        for client in all_clients:
+            if client.status == "training":
+                await fl_service.update_fl_client(db, client.id, status="active")
+                log.info("Client %s status: training → active", client.client_id)
 
     await ws_manager.broadcast(build_ws_message(msg_type, body.model_dump(exclude_none=True)))
 
