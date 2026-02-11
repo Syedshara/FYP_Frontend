@@ -180,15 +180,26 @@ async def save_prediction(
     await db.commit()
     await db.refresh(pred)
 
+    # Look up device name for WS broadcast
+    device_name: str | None = None
+    try:
+        dev = await device_service.get_device(db, body.device_id)
+        device_name = dev.name
+    except Exception:
+        pass
+
     # Broadcast via WebSocket
     await ws_manager.broadcast(build_ws_message(WSMessageType.PREDICTION, {
         "id": pred.id,
         "device_id": str(pred.device_id),
+        "device_name": device_name,
         "client_id": pred.client_id,
         "score": pred.score,
         "label": pred.label,
         "confidence": pred.confidence,
+        "attack_type": pred.attack_type,
         "inference_latency_ms": pred.inference_latency_ms,
+        "model_version": pred.model_version,
         "timestamp": pred.timestamp.isoformat() if pred.timestamp else None,
     }))
 
@@ -200,6 +211,7 @@ async def save_prediction(
         # Broadcast device status change
         await ws_manager.broadcast(build_ws_message(WSMessageType.DEVICE_STATUS, {
             "device_id": str(body.device_id),
+            "device_name": device_name,
             "status": new_status,
         }))
     except Exception as exc:

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import {
@@ -19,6 +19,17 @@ const PIE_COLORS = ['#ef4444', '#22c55e'];
 const stagger = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.05 } } };
 const fadeUp = { hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0 } };
 
+const RANGE_OPTIONS = ['1H', '6H', '24H', '7D'] as const;
+function dashRangeToMs(r: string): number {
+  switch (r) {
+    case '1H':  return 1 * 60 * 60 * 1000;
+    case '6H':  return 6 * 60 * 60 * 1000;
+    case '24H': return 24 * 60 * 60 * 1000;
+    case '7D':  return 7 * 24 * 60 * 60 * 1000;
+    default:    return 1 * 60 * 60 * 1000;
+  }
+}
+
 const chartTooltipStyle: React.CSSProperties = {
   background: 'var(--bg-card)', border: '1px solid var(--border)',
   borderRadius: 8, color: 'var(--text-primary)', boxShadow: 'var(--shadow-lg)', fontSize: 12,
@@ -30,6 +41,7 @@ export default function DashboardPage() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [clients, setClients] = useState<FLClient[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dashRange, setDashRange] = useState<string>('1H');
 
   // Live store data
   const wsConnected = useLiveStore((s) => s.wsConnected);
@@ -53,6 +65,20 @@ export default function DashboardPage() {
     const iv = setInterval(load, 30_000);
     return () => clearInterval(iv);
   }, []);
+
+  // Build a device map for name lookups (must be before early return)
+  const deviceMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const d of devices) m.set(d.id, d.name);
+    return m;
+  }, [devices]);
+
+  // Filter live predictions by selected time range (must be before early return)
+  const rangeFilteredPreds = useMemo(() => {
+    const now = Date.now();
+    const windowMs = dashRangeToMs(dashRange);
+    return livePredictions.filter((p) => now - new Date(p.timestamp).getTime() <= windowMs);
+  }, [livePredictions, dashRange]);
 
   if (loading) {
     return (
@@ -98,9 +124,9 @@ export default function DashboardPage() {
     ? [{ name: 'Attacks', value: effectiveSummary.attack_count }, { name: 'Benign', value: effectiveSummary.benign_count }]
     : [];
 
-  // Build timeline from live predictions (newest first → reverse for chart)
-  const timelineData = livePredictions.length > 0
-    ? [...livePredictions].reverse().map((p) => ({
+  // Build timeline from range-filtered predictions
+  const timelineData = rangeFilteredPreds.length > 0
+    ? [...rangeFilteredPreds].reverse().map((p) => ({
         time: new Date(p.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         score: p.score,
       }))
@@ -109,8 +135,8 @@ export default function DashboardPage() {
         score: +(Math.random() * attackRate + Math.random() * 0.2).toFixed(3),
       }));
 
-  // Live alerts (attacks from live predictions)
-  const liveAlerts = livePredictions
+  // Live alerts (attacks from range-filtered predictions)
+  const liveAlerts = rangeFilteredPreds
     .filter((p) => p.label === 'attack')
     .slice(0, 10);
 
@@ -233,12 +259,13 @@ export default function DashboardPage() {
               </p>
             </div>
             <div className="flex gap-1">
-              {['1H', '6H', '24H', '7D'].map((label, i) => (
-                <button key={label} style={{
+              {RANGE_OPTIONS.map((label) => (
+                <button key={label} onClick={() => setDashRange(label)} style={{
                   padding: '4px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
                   fontSize: 11, fontWeight: 600,
-                  background: i === 0 ? 'var(--accent)' : 'var(--bg-secondary)',
-                  color: i === 0 ? '#fff' : 'var(--text-muted)',
+                  background: dashRange === label ? 'var(--accent)' : 'var(--bg-secondary)',
+                  color: dashRange === label ? '#fff' : 'var(--text-muted)',
+                  transition: 'all 0.15s ease',
                 }}>{label}</button>
               ))}
             </div>
@@ -324,8 +351,12 @@ export default function DashboardPage() {
                   >
                     <td style={{ color: 'var(--text-muted)' }}>{idx + 1}</td>
                     <td>{new Date(alert.timestamp).toLocaleTimeString()}</td>
-                    <td style={{ fontWeight: 500, fontFamily: 'monospace', fontSize: 12 }}>
-                      {alert.device_name ?? `Device ${alert.device_id}`}
+                    <td style={{ fontWeight: 500, fontSize: 12 }}>
+                      {alert.device_name ?? deviceMap.get(String(alert.device_id)) ?? (
+                        <span title={`Device ID: ${alert.device_id}`} style={{ fontFamily: 'monospace', color: 'var(--text-muted)' }}>
+                          ⚠ {String(alert.device_id).slice(0, 8)}…
+                        </span>
+                      )}
                     </td>
                     <td>
                       <div className="flex items-center gap-2">

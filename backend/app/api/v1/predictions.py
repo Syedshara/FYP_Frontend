@@ -88,6 +88,7 @@ class PredictionOut(BaseModel):
     model_version: str
     inference_latency_ms: float
     timestamp: datetime
+    device_name: Optional[str] = None
     model_config = {"from_attributes": True}
 
 
@@ -202,4 +203,30 @@ async def device_predictions(
 ):
     """Get recent prediction history for a specific device."""
     preds = await prediction_service.get_predictions_for_device(db, device_id, limit)
-    return preds
+
+    # Look up device name once
+    device_name: str | None = None
+    try:
+        from app.services import device_service
+        dev = await device_service.get_device(db, device_id)
+        device_name = dev.name
+    except Exception:
+        pass
+
+    # Inject device_name into each prediction response
+    return [
+        PredictionOut(
+            id=p.id,
+            device_id=p.device_id,
+            client_id=p.client_id,
+            score=p.score,
+            label=p.label,
+            confidence=p.confidence,
+            attack_type=p.attack_type,
+            model_version=p.model_version,
+            inference_latency_ms=p.inference_latency_ms,
+            timestamp=p.timestamp,
+            device_name=device_name,
+        )
+        for p in preds
+    ]

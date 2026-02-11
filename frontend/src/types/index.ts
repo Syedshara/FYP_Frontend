@@ -182,6 +182,7 @@ export interface PredictResponse {
 export interface Prediction {
   id: number;
   device_id: string;
+  device_name?: string;
   score: number;
   label: string;
   confidence: number;

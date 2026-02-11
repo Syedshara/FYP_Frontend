@@ -55,6 +55,7 @@ services:
       - ./backend:/app                   # Hot-reload source code
       - ./model:/app/models              # Model .pt + .pkl files
       - ./data/clients:/app/client_data:rw  # Read-write: backend generates data for new clients
+      - ./data/scenarios:/app/scenarios:ro   # Scenario packs for simulation
       - /var/run/docker.sock:/var/run/docker.sock   # Docker SDK
     depends_on:
       postgres:
@@ -105,6 +106,7 @@ services:
       - ./fl_client:/app
       - ./fl_common:/fl_common
       - ./data/clients/bank_a:/app/data:ro
+      - ./data/scenarios:/app/scenarios:ro
       - ./model:/app/models:ro
     depends_on:
       - fl_server
@@ -128,6 +130,7 @@ services:
       - ./fl_client:/app
       - ./fl_common:/fl_common
       - ./data/clients/bank_b:/app/data:ro
+      - ./data/scenarios:/app/scenarios:ro
       - ./model:/app/models:ro
     depends_on:
       - fl_server
@@ -151,6 +154,7 @@ services:
       - ./fl_client:/app
       - ./fl_common:/fl_common
       - ./data/clients/bank_c:/app/data:ro
+      - ./data/scenarios:/app/scenarios:ro
       - ./model:/app/models:ro
     depends_on:
       - fl_server

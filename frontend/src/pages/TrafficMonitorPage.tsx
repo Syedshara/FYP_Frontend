@@ -97,7 +97,7 @@ export default function TrafficMonitorPage() {
   // Merge API predictions with live predictions (live first, dedup by timestamp)
   const mergedPredictions = useMemo(() => {
     const seen = new Set<string>();
-    const merged: Array<{ id: number; score: number; label: string; confidence: number; inference_latency_ms: number; timestamp: string }> = [];
+    const merged: Array<{ id: number; score: number; label: string; confidence: number; inference_latency_ms: number; timestamp: string; device_name?: string }> = [];
     for (const lp of deviceLivePreds) {
       const key = `${lp.device_id}-${lp.timestamp}`;
       if (!seen.has(key)) {
@@ -109,6 +109,7 @@ export default function TrafficMonitorPage() {
           confidence: lp.confidence,
           inference_latency_ms: lp.inference_latency_ms ?? 0,
           timestamp: lp.timestamp,
+          device_name: lp.device_name,
         });
       }
     }
@@ -116,7 +117,7 @@ export default function TrafficMonitorPage() {
       const key = `${selectedDevice}-${p.timestamp}`;
       if (!seen.has(key)) {
         seen.add(key);
-        merged.push(p);
+        merged.push({ ...p, device_name: (p as Prediction).device_name });
       }
     }
     return merged.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -345,6 +346,7 @@ export default function TrafficMonitorPage() {
               <tr className="table-header">
                 <th style={{ width: 60 }}>#</th>
                 <th style={{ textAlign: 'left' }}>TIMESTAMP</th>
+                <th style={{ textAlign: 'left' }}>DEVICE</th>
                 <th style={{ textAlign: 'left' }}>PREDICTION</th>
                 <th style={{ textAlign: 'center' }}>SCORE</th>
                 <th style={{ textAlign: 'center' }}>CONFIDENCE</th>
@@ -358,6 +360,11 @@ export default function TrafficMonitorPage() {
                   <tr key={`${p.id}-${p.timestamp}-${i}`} className="table-row" style={isAttack ? { background: 'rgba(239,68,68,0.06)' } : undefined}>
                     <td style={{ textAlign: 'center', fontSize: 12 }}>{i + 1}</td>
                     <td style={{ fontSize: 12 }}>{new Date(p.timestamp).toLocaleTimeString()}</td>
+                    <td style={{ fontSize: 12, fontWeight: 500 }}>
+                      {p.device_name ?? devices.find((d) => d.id === selectedDevice)?.name ?? (
+                        <span title={`ID: ${selectedDevice}`} style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>⚠ {selectedDevice.slice(0, 8)}…</span>
+                      )}
+                    </td>
                     <td>
                       <span style={{ fontSize: 12, fontWeight: 600, color: isAttack ? 'var(--danger)' : 'var(--success)' }}>
                         {isAttack ? 'ATTACK' : 'BENIGN'}
@@ -372,7 +379,7 @@ export default function TrafficMonitorPage() {
                 );
               }) : (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', padding: 32, color: 'var(--text-muted)', fontSize: 13 }}>
+                  <td colSpan={7} style={{ textAlign: 'center', padding: 32, color: 'var(--text-muted)', fontSize: 13 }}>
                     No predictions yet — select a device and run traffic analysis
                   </td>
                 </tr>

@@ -13,6 +13,7 @@ import PreventionPage from '@/pages/PreventionPage';
 import ClientsPage from '@/pages/ClientsPage';
 import SettingsPage from '@/pages/SettingsPage';
 import RegisterPage from '@/pages/RegisterPage';
+import SimulationControlPage from '@/pages/SimulationControlPage';
 import { WebSocketProvider } from '@/components/WebSocketProvider';
 import { useAuthStore } from '@/stores/authStore';
 
@@ -59,6 +60,7 @@ export default function App() {
             <Route path="attack-pipeline" element={<AttackPipelinePage />} />
             <Route path="clients" element={<ClientsPage />} />
             <Route path="fl-training" element={<FLTrainingPage />} />
+            <Route path="simulation" element={<SimulationControlPage />} />
             <Route path="prevention" element={<PreventionPage />} />
             <Route path="settings" element={<SettingsPage />} />
           </Route>

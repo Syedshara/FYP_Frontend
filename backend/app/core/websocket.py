@@ -153,6 +153,7 @@ class WSMessageType:
     CLIENT_STATUS   = "client_status"     # FL client container status change
     DEVICE_STATUS   = "device_status"     # device status change
     ALERT           = "alert"             # high-severity alert
+    SIMULATION_STATUS = "simulation_status"  # simulation state change
     PING            = "ping"              # keep-alive ping
     PONG            = "pong"              # keep-alive pong
     ERROR           = "error"             # server-side error

@@ -10,6 +10,7 @@ from app.api.v1.devices import router as devices_router
 from app.api.v1.predictions import router as predictions_router
 from app.api.v1.ws import router as ws_router
 from app.api.v1.internal import router as internal_router
+from app.api.v1.simulation import router as simulation_router
 
 router = APIRouter()
 
@@ -19,3 +20,4 @@ router.include_router(devices_router, prefix="/devices", tags=["devices"])
 router.include_router(predictions_router, prefix="/predictions", tags=["predictions"])
 router.include_router(ws_router, tags=["websocket"])
 router.include_router(internal_router, prefix="/internal", tags=["internal"])
+router.include_router(simulation_router, prefix="/simulation", tags=["simulation"])
