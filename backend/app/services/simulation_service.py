@@ -76,6 +76,9 @@ class SimulationConfig:
     replay_loop: bool = True         # loop when exhausted
     replay_shuffle: bool = False     # shuffle window order
     clients: list[str] = field(default_factory=lambda: ["bank_a", "bank_b", "bank_c"])
+    selected_client_id: Optional[str] = None  # Specific client to simulate
+    selected_device_id: Optional[str] = None  # Specific device to simulate
+    attack_ratio: float = 0.2        # Fraction of traffic that is attacks
 
 
 @dataclass
@@ -187,8 +190,8 @@ async def start_simulation(config: SimulationConfig) -> SimulationStatus:
     """
     Start traffic simulation for specified clients.
 
-    Creates/starts FL client containers in MONITOR mode with the specified
-    scenario and configuration.
+    If FL client containers are available, creates/starts them in MONITOR mode.
+    Otherwise, falls back to synthetic traffic generation in the backend.
     """
     global _simulation_status
 
@@ -205,6 +208,51 @@ async def start_simulation(config: SimulationConfig) -> SimulationStatus:
 
     log.info("Starting simulation: scenario=%s, speed=%.1f, clients=%s",
              config.scenario or "client_data", config.replay_speed, config.clients)
+
+    # Check if FL client containers are available
+    containers_available = docker_service.image_exists(docker_service.FL_CLIENT_IMAGE)
+    if not containers_available:
+        log.info("FL client image not found. Using backend synthetic traffic mode.")
+        
+        from app.services import synthetic_simulation
+        
+        # Start synthetic traffic generation
+        try:
+            await synthetic_simulation.start_synthetic_simulation(
+                backend_db=None,  # Not needed for synthetic mode
+                monitor_interval=config.monitor_interval,
+                attack_ratio=config.attack_ratio,
+                window_size=10,
+                device_id=config.selected_device_id,
+                client_id=config.selected_client_id,
+            )
+            log.info("Synthetic simulation started with attack_ratio=%.2f, device_id=%s",
+                     config.attack_ratio, config.selected_device_id)
+        except Exception as exc:
+            log.error("Failed to start synthetic simulation: %s", exc, exc_info=True)
+            _simulation_status.state = SimulationState.ERROR
+            await ws_manager.broadcast(build_ws_message(
+                WSMessageType.SIMULATION_STATUS,
+                {"state": "error", "error": str(exc)},
+            ))
+            return _simulation_status
+        
+        _simulation_status.state = SimulationState.RUNNING
+        _simulation_status.started_at = time.time()
+        # Create virtual client entries for tracking
+        for client_id in config.clients:
+            _simulation_status.clients.append(
+                ClientSimStatus(
+                    client_id=client_id,
+                    state=SimulationState.RUNNING,
+                    started_at=time.time(),
+                )
+            )
+        await ws_manager.broadcast(build_ws_message(
+            WSMessageType.SIMULATION_STATUS,
+            get_status().to_dict(),
+        ))
+        return _simulation_status
 
     # Broadcast starting status
     await ws_manager.broadcast(build_ws_message(
@@ -228,7 +276,12 @@ async def start_simulation(config: SimulationConfig) -> SimulationStatus:
                 "REPLAY_SPEED": str(config.replay_speed),
                 "REPLAY_LOOP": "true" if config.replay_loop else "false",
                 "REPLAY_SHUFFLE": "true" if config.replay_shuffle else "false",
+                "ATTACK_RATIO": str(config.attack_ratio),
             }
+
+            # Add device ID if specified (for device-specific monitoring)
+            if config.selected_device_id:
+                environment["MONITOR_DEVICE_ID"] = config.selected_device_id
 
             # Add scenario env if specified
             if config.scenario and config.scenario != "client_data":
@@ -258,26 +311,32 @@ async def start_simulation(config: SimulationConfig) -> SimulationStatus:
             # Remove stale container
             docker_service._remove_if_exists(container_name)
 
-            dk = docker_service._get_docker()
-            container = dk.containers.create(
-                image=docker_service.FL_CLIENT_IMAGE,
-                name=container_name,
-                environment=environment,
-                volumes=volumes,
-                network=docker_service.DOCKER_NETWORK,
-                restart_policy={"Name": "no"},
-                detach=True,
-            )
+            try:
+                dk = docker_service._get_docker()
+                container = dk.containers.create(
+                    image=docker_service.FL_CLIENT_IMAGE,
+                    name=container_name,
+                    environment=environment,
+                    volumes=volumes,
+                    network=docker_service.DOCKER_NETWORK,
+                    restart_policy={"Name": "no"},
+                    detach=True,
+                )
 
-            container.start()
-            container.reload()
+                container.start()
+                container.reload()
 
-            client_status.container_id = container.id
-            client_status.container_name = container.name
-            client_status.state = SimulationState.RUNNING
-            client_status.started_at = time.time()
+                client_status.container_id = container.id
+                client_status.container_name = container.name
+                client_status.state = SimulationState.RUNNING
+                client_status.started_at = time.time()
 
-            log.info("Started simulation container %s for %s", container.name, client_id)
+                log.info("Started simulation container %s for %s", container.name, client_id)
+            except docker_service.ImageNotFound:
+                # Should not reach here due to early check, but handle gracefully
+                raise ValueError(f"Docker image {docker_service.FL_CLIENT_IMAGE} not found. Ensure FL profile is enabled: docker-compose --profile fl up -d")
+            except Exception as inner_exc:
+                raise inner_exc
 
         except Exception as exc:
             log.error("Failed to start simulation for %s: %s", client_id, exc)
@@ -303,16 +362,24 @@ async def start_simulation(config: SimulationConfig) -> SimulationStatus:
 
 
 async def stop_simulation() -> SimulationStatus:
-    """Stop all running simulation containers."""
+    """Stop all running simulation containers and synthetic traffic."""
     global _simulation_status
 
-    from app.services import docker_service
+    from app.services import docker_service, synthetic_simulation
     from app.core.websocket import ws_manager, WSMessageType, build_ws_message
 
     if _simulation_status.state not in (SimulationState.RUNNING, SimulationState.PAUSED, SimulationState.ERROR):
         raise ValueError(f"No simulation to stop (state={_simulation_status.state.value})")
 
     _simulation_status.state = SimulationState.STOPPING
+
+    # Stop synthetic simulation if running
+    if synthetic_simulation.is_synthetic_running():
+        try:
+            await synthetic_simulation.stop_synthetic_simulation()
+            log.info("Stopped synthetic simulation")
+        except Exception as exc:
+            log.warning("Error stopping synthetic simulation: %s", exc)
 
     for client_status in _simulation_status.clients:
         if client_status.container_id:

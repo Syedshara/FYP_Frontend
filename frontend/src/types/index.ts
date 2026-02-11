@@ -179,17 +179,26 @@ export interface PredictResponse {
   prediction_id: number | null;
 }
 
+// FIND the Prediction interface and ADD these fields:
 export interface Prediction {
   id: number;
   device_id: string;
-  device_name?: string;
   score: number;
   label: string;
   confidence: number;
-  attack_type: string | null;
-  model_version: string;
   inference_latency_ms: number;
   timestamp: string;
+  device_name?: string;
+  // ADD THESE:
+  explanation?: string;
+  top_anomalies?: Array<{
+    feature: string;
+    value: number;
+    baseline: number;
+    ratio: number;
+  }>;
+  temporal_pattern?: string;
+  ground_truth?: string;
 }
 
 export interface PredictionSummary {

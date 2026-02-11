@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { Fragment, useEffect, useState, useMemo, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Loader2, Download, Pause, Play, Cpu, Wifi, WifiOff } from 'lucide-react';
@@ -97,7 +97,7 @@ export default function TrafficMonitorPage() {
   // Merge API predictions with live predictions (live first, dedup by timestamp)
   const mergedPredictions = useMemo(() => {
     const seen = new Set<string>();
-    const merged: Array<{ id: number; score: number; label: string; confidence: number; inference_latency_ms: number; timestamp: string; device_name?: string }> = [];
+    const merged: Array<{ id: number; score: number; label: string; confidence: number; inference_latency_ms: number; timestamp: string; device_name?: string; explanation?: string; temporal_pattern?: string; top_anomalies?: Array<{ feature: string; ratio: number }> }> = [];
     for (const lp of deviceLivePreds) {
       const key = `${lp.device_id}-${lp.timestamp}`;
       if (!seen.has(key)) {
@@ -110,6 +110,9 @@ export default function TrafficMonitorPage() {
           inference_latency_ms: lp.inference_latency_ms ?? 0,
           timestamp: lp.timestamp,
           device_name: lp.device_name,
+          explanation: (lp as any).explanation,
+          temporal_pattern: (lp as any).temporal_pattern,
+          top_anomalies: (lp as any).top_anomalies,
         });
       }
     }
@@ -357,26 +360,48 @@ export default function TrafficMonitorPage() {
               {filteredPredictions.length > 0 ? [...filteredPredictions].reverse().slice(0, 20).map((p, i) => {
                 const isAttack = p.label.toLowerCase() === 'attack';
                 return (
-                  <tr key={`${p.id}-${p.timestamp}-${i}`} className="table-row" style={isAttack ? { background: 'rgba(239,68,68,0.06)' } : undefined}>
-                    <td style={{ textAlign: 'center', fontSize: 12 }}>{i + 1}</td>
-                    <td style={{ fontSize: 12 }}>{new Date(p.timestamp).toLocaleTimeString()}</td>
-                    <td style={{ fontSize: 12, fontWeight: 500 }}>
-                      {p.device_name ?? devices.find((d) => d.id === selectedDevice)?.name ?? (
-                        <span title={`ID: ${selectedDevice}`} style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>⚠ {selectedDevice.slice(0, 8)}…</span>
-                      )}
-                    </td>
-                    <td>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: isAttack ? 'var(--danger)' : 'var(--success)' }}>
-                        {isAttack ? 'ATTACK' : 'BENIGN'}
-                      </span>
-                    </td>
-                    <td style={{ textAlign: 'center', fontSize: 13, fontWeight: 600, color: isAttack ? 'var(--danger)' : 'var(--success)' }}>
-                      {p.score.toFixed(2)}
-                    </td>
-                    <td style={{ textAlign: 'center', fontSize: 12 }}>{(p.confidence * 100).toFixed(0)}%</td>
-                    <td style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-muted)' }}>{p.inference_latency_ms.toFixed(0)}ms</td>
-                  </tr>
-                );
+    <Fragment key={`row-${p.id}-${p.timestamp}-${i}`}>
+      <tr key={`${p.id}-${p.timestamp}-${i}`} className="table-row" style={isAttack ? { background: 'rgba(239,68,68,0.06)' } : undefined}>
+        <td style={{ textAlign: 'center', fontSize: 12 }}>{i + 1}</td>
+        <td style={{ fontSize: 12 }}>{new Date(p.timestamp).toLocaleTimeString()}</td>
+        <td style={{ fontSize: 12, fontWeight: 500 }}>
+          {p.device_name ?? devices.find((d) => d.id === selectedDevice)?.name ?? (
+            <span title={`ID: ${selectedDevice}`} style={{ color: 'var(--text-muted)', fontFamily: 'monospace' }}>⚠ {selectedDevice.slice(0, 8)}…</span>
+          )}
+        </td>
+        <td>
+          <span style={{ fontSize: 12, fontWeight: 600, color: isAttack ? 'var(--danger)' : 'var(--success)' }}>
+            {isAttack ? 'ATTACK' : 'BENIGN'}
+          </span>
+        </td>
+        <td style={{ textAlign: 'center', fontSize: 13, fontWeight: 600, color: isAttack ? 'var(--danger)' : 'var(--success)' }}>
+          {p.score.toFixed(2)}
+        </td>
+        <td style={{ textAlign: 'center', fontSize: 12 }}>{(p.confidence * 100).toFixed(0)}%</td>
+        <td style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-muted)' }}>{p.inference_latency_ms.toFixed(0)}ms</td>
+      </tr>
+      
+      {/* EXPLANATION ROW */}
+      {p.explanation && (
+        <tr key={`exp-${p.id}-${i}`} style={{ borderTop: 'none' }}>
+          <td colSpan={7} style={{ padding: '8px 16px', background: 'var(--bg-secondary)', fontSize: 11 }}>
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+              {p.temporal_pattern && (
+                <span style={{ color: 'var(--text-muted)' }}>
+                  📊 <strong>Pattern:</strong> {p.temporal_pattern}
+                </span>
+              )}
+              {p.top_anomalies && p.top_anomalies.length > 0 && (
+                <span style={{ color: 'var(--accent)' }}>
+                  🔍 <strong>{p.top_anomalies[0].feature}:</strong> {p.top_anomalies[0].ratio.toFixed(1)}x higher
+                </span>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </Fragment>
+  );
               }) : (
                 <tr>
                   <td colSpan={7} style={{ textAlign: 'center', padding: 32, color: 'var(--text-muted)', fontSize: 13 }}>

@@ -18,6 +18,9 @@ export interface SimulationStartConfig {
   replay_loop: boolean;
   replay_shuffle: boolean;
   clients: string[];
+  selected_client_id?: string;
+  selected_device_id?: string;
+  attack_ratio?: number;
 }
 
 export interface ClientSimStatus {

@@ -73,3 +73,5 @@ Thumbs.db
 # ──────────────────────────────────────
 node_modules/
 .next/
+Untitled3.ipynb
+*.md

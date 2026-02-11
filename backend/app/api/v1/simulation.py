@@ -53,6 +53,18 @@ class SimulationStartRequest(BaseModel):
         default=["bank_a", "bank_b", "bank_c"],
         description="List of client IDs to run simulation for",
     )
+    selected_client_id: Optional[str] = Field(
+        default=None,
+        description="Specific client ID to simulate (overrides clients list)",
+    )
+    selected_device_id: Optional[str] = Field(
+        default=None,
+        description="Specific device ID to simulate traffic for",
+    )
+    attack_ratio: float = Field(
+        default=0.2, ge=0.0, le=1.0,
+        description="Fraction of traffic that should be attacks (0.0–1.0)",
+    )
 
 
 class ScenarioOut(BaseModel):
@@ -99,14 +111,23 @@ async def start_simulation(req: SimulationStartRequest):
 
     Creates FL client containers in MONITOR mode, replaying real
     CIC-IDS2017 data through the trained CNN-LSTM model.
+    
+    If selected_client_id is provided, uses that client instead of the clients list.
+    If selected_device_id is provided, passes it to the client for device-specific monitoring.
     """
+    # If specific client is selected, use only that client
+    clients_to_simulate = [req.selected_client_id] if req.selected_client_id else req.clients
+    
     config = SimulationConfig(
         scenario=req.scenario if req.scenario != "client_data" else "",
         replay_speed=req.replay_speed,
         monitor_interval=req.monitor_interval,
         replay_loop=req.replay_loop,
         replay_shuffle=req.replay_shuffle,
-        clients=req.clients,
+        clients=clients_to_simulate,
+        selected_client_id=req.selected_client_id,
+        selected_device_id=req.selected_device_id,
+        attack_ratio=req.attack_ratio,
     )
 
     try:

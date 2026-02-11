@@ -3,11 +3,14 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Loader2, Play, Square, Radio, Zap, Activity, Server,
   RefreshCw, Clock, AlertTriangle, CheckCircle2, XCircle,
-  ChevronDown, Shuffle, Repeat, Gauge, Settings2,
+  ChevronDown, Shuffle, Repeat, Gauge, Settings2, Cpu,
 } from 'lucide-react';
 import { simulationApi } from '@/api/simulation';
+import { clientsApi } from '@/api/clients';
+import { devicesApi } from '@/api/devices';
 import { useLiveStore } from '@/stores/liveStore';
 import type { Scenario, SimulationStatus, SimulationStartConfig } from '@/api/simulation';
+import type { FLClient, Device, DeviceBrief } from '@/types';
 
 /* ── Animations ───────────────────────────────── */
 const stagger = { hidden: { opacity: 0 }, show: { opacity: 1, transition: { staggerChildren: 0.06 } } };
@@ -65,12 +68,19 @@ export default function SimulationControlPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Client & Device selection
+  const [flClients, setFlClients] = useState<FLClient[]>([]);
+  const [selectedClient, setSelectedClient] = useState<number | null>(null);
+  const [clientDevices, setClientDevices] = useState<DeviceBrief[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState<string | null>(null);
+
   // Config state
   const [selectedScenario, setSelectedScenario] = useState('client_data');
   const [replaySpeed, setReplaySpeed] = useState(1.0);
   const [monitorInterval, setMonitorInterval] = useState(3.0);
   const [replayLoop, setReplayLoop] = useState(true);
   const [replayShuffle, setReplayShuffle] = useState(false);
+  const [attackRatio, setAttackRatio] = useState(0.2);
   const [selectedClients, setSelectedClients] = useState<Set<string>>(new Set(ALL_CLIENTS));
 
   // Live predictions from WS
@@ -84,9 +94,15 @@ export default function SimulationControlPage() {
     Promise.all([
       simulationApi.scenarios().catch(() => []),
       simulationApi.status().catch(() => null),
-    ]).then(([scens, stat]) => {
+      clientsApi.list().catch(() => []),
+      devicesApi.list().catch(() => []),
+    ]).then(([scens, stat, clients, devices]) => {
       setScenarios(scens);
       if (stat) setStatus(stat);
+      setFlClients(clients);
+      if (clients.length > 0) {
+        setSelectedClient(clients[0].id);
+      }
     }).finally(() => setLoading(false));
   }, []);
 
@@ -105,13 +121,90 @@ export default function SimulationControlPage() {
     };
   }, [status?.state]);
 
+  // ── Load devices for selected client ────────
+  useEffect(() => {
+    if (!selectedClient) return;
+    clientsApi.devices(selectedClient)
+      .then(setClientDevices)
+      .catch(() => setClientDevices([]));
+  }, [selectedClient]);
+
   // ── Live prediction stats ─────────────────────
   const liveStats = useMemo(() => {
-    if (livePredictions.length === 0) return { total: 0, attacks: 0, benign: 0, avgScore: 0, avgLatency: 0 };
+    if (livePredictions.length === 0) return { 
+      total: 0, 
+      attacks: 0, 
+      benign: 0, 
+      avgScore: 0, 
+      avgLatency: 0,
+      attackRate: 0 
+    };
     const attacks = livePredictions.filter((p) => p.label === 'attack').length;
     const avgScore = livePredictions.reduce((s, p) => s + p.score, 0) / livePredictions.length;
     const avgLatency = livePredictions.reduce((s, p) => s + (p.inference_latency_ms ?? 0), 0) / livePredictions.length;
-    return { total: livePredictions.length, attacks, benign: livePredictions.length - attacks, avgScore, avgLatency };
+    const attackRate = (attacks / livePredictions.length) * 100;
+    return { 
+      total: livePredictions.length, 
+      attacks, 
+      benign: livePredictions.length - attacks, 
+      avgScore, 
+      avgLatency,
+      attackRate
+    };
+  }, [livePredictions]);
+
+  // ── Enhanced analysis: Latest prediction + detailed stats ──
+  const analysisData = useMemo(() => {
+    if (livePredictions.length === 0) return null;
+    
+    const latest = livePredictions[livePredictions.length - 1];
+    const attackCounts = livePredictions.reduce((acc, p) => {
+      const type = p.attack_type?.toUpperCase() || 'UNKNOWN';
+      acc[type] = (acc[type] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+    
+    // Probability as percentage
+    const probPercent = (latest.confidence ?? 0) * 100;
+    
+    // Mock feature importance based on attack type
+    const mockFeatures = latest.attack_type === 'ddos' 
+      ? [
+          { name: 'Fwd_Packets_Per_Sec', value: 1250, baseline: 10, severity: 5 },
+          { name: 'Fwd_Packets', value: 850, baseline: 10, severity: 5 },
+          { name: 'Fwd_Length', value: 42000, baseline: 500, severity: 4 },
+        ]
+      : latest.attack_type === 'portscan'
+      ? [
+          { name: 'SYN_Flag_Count', value: 72, baseline: 2, severity: 5 },
+          { name: 'ACK_Flag_Count', value: 1, baseline: 10, severity: 4 },
+          { name: 'Fwd_Packets', value: 95, baseline: 10, severity: 3 },
+        ]
+      : latest.attack_type === 'slowloris'
+      ? [
+          { name: 'Flow_IAT_Max', value: 8500, baseline: 500, severity: 5 },
+          { name: 'Flow_Duration', value: 35000, baseline: 1000, severity: 5 },
+          { name: 'Fwd_Packets', value: 8, baseline: 10, severity: 2 },
+        ]
+      : [];
+    
+    // Adaptive sequence length recommendation
+    const seqLengths: Record<string, number> = {
+      'DDOS': 5,
+      'PORTSCAN': 8, 
+      'SLOWLORIS': 15,
+    };
+    const attackType = latest.attack_type?.toUpperCase() || 'UNKNOWN';
+    const recommendedSeqLen = seqLengths[attackType] || 10;
+    
+    return {
+      latest,
+      probPercent,
+      attackCounts,
+      mockFeatures,
+      recommendedSeqLen,
+      attackType,
+    };
   }, [livePredictions]);
 
   // ── Actions ───────────────────────────────────
@@ -119,6 +212,7 @@ export default function SimulationControlPage() {
     setActionLoading(true);
     setError(null);
     try {
+      const selectedClientObj = flClients.find(c => c.id === selectedClient);
       const config: SimulationStartConfig = {
         scenario: selectedScenario,
         replay_speed: replaySpeed,
@@ -126,6 +220,9 @@ export default function SimulationControlPage() {
         replay_loop: replayLoop,
         replay_shuffle: replayShuffle,
         clients: Array.from(selectedClients),
+        selected_client_id: selectedClientObj?.client_id,
+        selected_device_id: selectedDevice || undefined,
+        attack_ratio: attackRatio,
       };
       const s = await simulationApi.start(config);
       setStatus(s);
@@ -135,7 +232,7 @@ export default function SimulationControlPage() {
     } finally {
       setActionLoading(false);
     }
-  }, [selectedScenario, replaySpeed, monitorInterval, replayLoop, replayShuffle, selectedClients]);
+  }, [selectedScenario, replaySpeed, monitorInterval, replayLoop, replayShuffle, selectedClients, selectedClient, selectedDevice, attackRatio, flClients]);
 
   const handleStop = useCallback(async () => {
     setActionLoading(true);
@@ -256,26 +353,38 @@ export default function SimulationControlPage() {
             style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 12 }}
           >
             {[
-              { label: 'Total Predictions', value: liveStats.total, icon: Activity, color: 'var(--accent)' },
-              { label: 'Attacks Detected', value: liveStats.attacks, icon: AlertTriangle, color: 'var(--danger)' },
-              { label: 'Benign Flows', value: liveStats.benign, icon: CheckCircle2, color: 'var(--success)' },
-              { label: 'Avg Score', value: liveStats.avgScore.toFixed(3), icon: Zap, color: 'var(--warning)' },
-              { label: 'Avg Latency', value: `${liveStats.avgLatency.toFixed(1)}ms`, icon: Clock, color: 'var(--accent)' },
+              { label: 'Total Predictions', value: liveStats.total, icon: Activity, color: 'var(--accent)', format: 'number' },
+              { label: 'Attacks Detected', value: liveStats.attacks, icon: AlertTriangle, color: 'var(--danger)', format: 'number' },
+              { label: 'Attack Rate', value: liveStats.attackRate.toFixed(1), icon: Zap, color: 'var(--warning)', format: 'percent' },
+              { label: 'Benign Flows', value: liveStats.benign, icon: CheckCircle2, color: 'var(--success)', format: 'number' },
+              { label: 'Avg Score', value: liveStats.total > 0 ? liveStats.avgScore.toFixed(3) : '0.000', icon: Zap, color: 'var(--accent)', format: 'score' },
+              { label: 'Avg Latency', value: liveStats.total > 0 ? liveStats.avgLatency.toFixed(1) : '0.0', icon: Clock, color: 'var(--accent)', format: 'latency' },
             ].map((kpi) => (
               <div
                 key={kpi.label}
                 style={{
                   background: 'var(--bg-card)', border: '1px solid var(--border)',
                   borderRadius: 12, padding: '16px 18px',
+                  opacity: liveStats.total > 0 ? 1 : 0.6,
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                   <div style={{ width: 30, height: 30, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', background: `color-mix(in srgb, ${kpi.color} 15%, transparent)` }}>
-                    <kpi.icon style={{ width: 14, height: 14, color: kpi.color }} />
+                    {liveStats.total === 0 ? (
+                      <Loader2 style={{ width: 14, height: 14, color: kpi.color, animation: 'spin 1s linear infinite' }} />
+                    ) : (
+                      <kpi.icon style={{ width: 14, height: 14, color: kpi.color }} />
+                    )}
                   </div>
                   <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 500 }}>{kpi.label}</span>
                 </div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>{kpi.value}</div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)' }}>
+                  {liveStats.total === 0 ? (
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Waiting...</span>
+                  ) : (
+                    <>{kpi.format === 'latency' ? `${kpi.value}ms` : (kpi.format === 'percent' ? `${kpi.value}%` : kpi.value)}</>
+                  )}
+                </div>
               </div>
             ))}
           </motion.div>
@@ -284,6 +393,91 @@ export default function SimulationControlPage() {
 
       {/* ── Main Grid: Config + Client Status ──── */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
+
+        {/* ── Client & Device Selection ──────────── */}
+        <motion.div
+          variants={fadeUp}
+          style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14, padding: 24 }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 18 }}>
+            <Cpu style={{ width: 16, height: 16, color: 'var(--accent)' }} />
+            <h2 style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>Device Selection</h2>
+          </div>
+
+          {/* Client Selector */}
+          <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 6, display: 'block' }}>
+            Select Client
+          </label>
+          <div style={{ position: 'relative', marginBottom: 16 }}>
+            <select
+              value={selectedClient || ''}
+              onChange={(e) => setSelectedClient(parseInt(e.target.value) || null)}
+              disabled={isRunning}
+              style={{
+                width: '100%', padding: '10px 14px', borderRadius: 8,
+                border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+                color: 'var(--text-primary)', fontSize: 13, cursor: isRunning ? 'not-allowed' : 'pointer',
+                appearance: 'none', outline: 'none', opacity: isRunning ? 0.6 : 1,
+              }}
+            >
+              <option value="">-- Choose a client --</option>
+              {flClients.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.client_id} ({c.name})
+                </option>
+              ))}
+            </select>
+            <ChevronDown style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, color: 'var(--text-muted)', pointerEvents: 'none' }} />
+          </div>
+
+          {/* Device Selector */}
+          {selectedClient && clientDevices.length > 0 && (
+            <>
+              <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 6, display: 'block' }}>
+                Select Device
+              </label>
+              <div style={{ position: 'relative', marginBottom: 16 }}>
+                <select
+                  value={selectedDevice || ''}
+                  onChange={(e) => setSelectedDevice(e.target.value || null)}
+                  disabled={isRunning}
+                  style={{
+                    width: '100%', padding: '10px 14px', borderRadius: 8,
+                    border: '1px solid var(--border)', background: 'var(--bg-secondary)',
+                    color: 'var(--text-primary)', fontSize: 13, cursor: isRunning ? 'not-allowed' : 'pointer',
+                    appearance: 'none', outline: 'none', opacity: isRunning ? 0.6 : 1,
+                  }}
+                >
+                  <option value="">-- All devices --</option>
+                  {clientDevices.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name} ({d.device_type})
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', width: 14, height: 14, color: 'var(--text-muted)', pointerEvents: 'none' }} />
+              </div>
+            </>
+          )}
+
+          {/* Attack Ratio */}
+          <label style={{ fontSize: 12, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 6, display: 'block' }}>
+            <Zap style={{ width: 12, height: 12, display: 'inline', verticalAlign: 'middle', marginRight: 4 }} />
+            Attack Ratio: {(attackRatio * 100).toFixed(0)}%
+          </label>
+          <input
+            type="range"
+            min={0} max={100} step={5}
+            value={attackRatio * 100}
+            onChange={(e) => setAttackRatio(parseFloat(e.target.value) / 100)}
+            disabled={isRunning}
+            style={{ width: '100%', marginBottom: 16, accentColor: 'var(--accent)', opacity: isRunning ? 0.6 : 1 }}
+          />
+
+          <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: '8px 0 0', lineHeight: 1.5 }}>
+            📊 Configure real-world traffic generation with controllable attack injection ratio
+          </p>
+        </motion.div>
 
         {/* ── Scenario Selection ─────────────────── */}
         <motion.div

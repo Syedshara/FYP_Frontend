@@ -18,6 +18,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.prediction import Prediction
+from app.services.explainability import explain_prediction
 
 log = logging.getLogger(__name__)
 
@@ -54,8 +55,7 @@ class CNN_LSTM_IDS(torch.nn.Module):
 # ── Paths to search for model weights ──────────────────
 
 MODEL_SEARCH_PATHS = [
-    "/app/models/fl_checkpoints/global_final.pt",
-    "/app/models/global_final.pt",
+    
     "/app/models/cnn_lstm_global_with_HE_25rounds_16k.pt",
 ]
 
@@ -111,17 +111,16 @@ def get_model_info() -> dict:
 
 
 # ── Inference ────────────────────────────────────────────
-
 def run_inference(features: list[list[float]]) -> dict:
     """
-    Run inference on a sequence of feature vectors.
+    Run inference on a sequence of feature vectors with explainability.
 
     Args:
         features: List of 10 feature vectors, each with 78 floats.
                   Shape: (seq_len=10, num_features=78)
 
     Returns:
-        dict with score, label, confidence
+        dict with score, label, confidence, AND explanation
     """
     if _model is None:
         if not load_model():
@@ -147,14 +146,24 @@ def run_inference(features: list[list[float]]) -> dict:
     label = "attack" if prob >= THRESHOLD else "benign"
     confidence = prob if label == "attack" else 1.0 - prob
 
+    # ADD EXPLAINABILITY
+    explanation_data = explain_prediction(
+        window=features,
+        score=prob,
+        label=label
+    )
+
     return {
         "score": round(prob, 6),
         "label": label,
         "confidence": round(confidence, 6),
         "inference_latency_ms": round(latency_ms, 2),
         "model_version": _model_version,
+        "explanation": explanation_data["explanation"],
+        "top_anomalies": explanation_data["top_anomalies"],
+        "temporal_pattern": explanation_data["temporal_pattern"],
+        "anomaly_count": explanation_data["anomaly_count"],
     }
-
 
 def run_batch_inference(batch: list[list[list[float]]]) -> list[dict]:
     """

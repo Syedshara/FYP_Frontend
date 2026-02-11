@@ -52,6 +52,7 @@ CLIENT_ID = os.environ.get("CLIENT_ID", "client_0")
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://iot_ids_backend:8000")
 MONITOR_INTERVAL = float(os.environ.get("MONITOR_INTERVAL", "3.0"))
 ATTACK_RATIO = float(os.environ.get("ATTACK_RATIO", "0.2"))
+MONITOR_DEVICE_ID = os.environ.get("MONITOR_DEVICE_ID", None)  # Device-specific monitoring
 MODEL_DIR = os.environ.get("MODEL_DIR", "/app/models")
 SCENARIO = os.environ.get("SCENARIO", "")           # empty = use client data
 REPLAY_SPEED = float(os.environ.get("REPLAY_SPEED", "1.0"))
@@ -213,12 +214,36 @@ async def monitor_loop(stop_event: asyncio.Event | None = None):
         else:
             log.info("Using scenario: %s (%s)", SCENARIO, scenario_dir)
 
-    simulator = ReplaySimulator(
-        data_dir=DATA_DIR,
-        scenario_dir=scenario_dir,
-        loop=REPLAY_LOOP,
-        shuffle=REPLAY_SHUFFLE,
-    )
+    # Use HybridSimulator if attack_ratio is configured or device is specified
+    use_hybrid = ATTACK_RATIO > 0 or MONITOR_DEVICE_ID is not None
+    
+    if use_hybrid:
+        try:
+            from hybrid_simulator import HybridSimulator
+            simulator = HybridSimulator(
+                data_dir=DATA_DIR,
+                scenario_dir=scenario_dir,
+                attack_ratio=ATTACK_RATIO,
+                device_id=MONITOR_DEVICE_ID or "default",
+                client_id=CLIENT_ID,
+                loop=REPLAY_LOOP,
+                shuffle=REPLAY_SHUFFLE,                use_temporal=True,  # Enable realistic temporal attack patterns            )
+            log.info("Using HybridSimulator with attack_ratio=%.2f, device=%s", ATTACK_RATIO, MONITOR_DEVICE_ID or "all")
+        except ImportError:
+            log.warning("HybridSimulator not available, falling back to ReplaySimulator")
+            simulator = ReplaySimulator(
+                data_dir=DATA_DIR,
+                scenario_dir=scenario_dir,
+                loop=REPLAY_LOOP,
+                shuffle=REPLAY_SHUFFLE,
+            )
+    else:
+        simulator = ReplaySimulator(
+            data_dir=DATA_DIR,
+            scenario_dir=scenario_dir,
+            loop=REPLAY_LOOP,
+            shuffle=REPLAY_SHUFFLE,
+        )
 
     effective_interval = MONITOR_INTERVAL / max(REPLAY_SPEED, 0.1)
 
@@ -262,31 +287,45 @@ async def monitor_loop(stop_event: asyncio.Event | None = None):
                 device_name = device.get("name", device_id)
 
                 # Check if replay data is exhausted (non-looping mode)
-                if simulator.exhausted:
+                if hasattr(simulator, 'exhausted') and simulator.exhausted:
                     log.info("Replay data exhausted — stopping monitor")
                     return
 
-                # Get next real window from replay buffer
-                window, true_label, attack_frac = simulator.get_next_window()
+                # Get next window (API differs between HybridSimulator and ReplaySimulator)
+                if isinstance(simulator, ReplaySimulator):
+                    window, true_label, attack_frac = simulator.get_next_window()
+                    result_metadata = {"true_label": "attack" if true_label == 1 else "benign"}
+                else:
+                    # HybridSimulator API: returns (window, metadata)
+                    window, sim_metadata = simulator.generate_window()
+                    true_label = 1 if sim_metadata.get("has_attack") else 0
+                    result_metadata = {
+                        "true_label": "attack" if true_label == 1 else "benign",
+                        "is_synthetic": sim_metadata.get("is_synthetic", False),
+                        "window_id": sim_metadata.get("window_id"),
+                    }
 
                 # Run real CNN-LSTM inference on real preprocessed data
                 result = run_local_inference(model, window)
+                result.update(result_metadata)
 
                 # Include ground truth and replay stats in the prediction
-                result["true_label"] = "attack" if true_label == 1 else "benign"
-                result["replay_progress"] = simulator.progress
+                result["replay_progress"] = simulator.progress if hasattr(simulator, 'progress') else 0
                 result["attack_type"] = SCENARIO if SCENARIO else None
+                
+                if MONITOR_DEVICE_ID:
+                    result["monitoring_device"] = MONITOR_DEVICE_ID
 
                 # POST to backend
                 ok = await post_prediction(http, device_id, client_db_id, result)
 
                 log.info(
-                    "[%s] device=%s  pred=%s  truth=%s  score=%.4f  conf=%.4f  latency=%.1fms  progress=%.1f%%  posted=%s",
+                    "[%s] device=%s  pred=%s  truth=%s  score=%.4f  conf=%.4f  latency=%.1fms  synthetic=%s  posted=%s",
                     CLIENT_ID, device_name[:20],
-                    result["label"], result["true_label"],
+                    result["label"], result.get("true_label", "unknown"),
                     result["score"], result["confidence"],
                     result["inference_latency_ms"],
-                    simulator.progress * 100,
+                    result.get("is_synthetic", False),
                     "✓" if ok else "✗",
                 )
 

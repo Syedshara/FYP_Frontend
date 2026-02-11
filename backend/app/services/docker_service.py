@@ -49,6 +49,19 @@ def _get_docker() -> docker.DockerClient:
     return _docker_client
 
 
+def image_exists(image_name: str) -> bool:
+    """Check if a Docker image exists."""
+    try:
+        dk = _get_docker()
+        dk.images.get(image_name)
+        return True
+    except (NotFound, ImageNotFound):
+        return False
+    except Exception as e:
+        log.warning(f"Error checking image {image_name}: {e}")
+        return False
+
+
 # ── Public API ───────────────────────────────────────────
 
 def create_client_container(
